@@ -358,8 +358,34 @@ class WtrBrowserService : Service() {
         WtrAudioControlBridge.onWebViewProgressTrigger?.invoke("pause", lastWordIndex)
     }
 
+    private fun isPlaylistPrimarilyEnglish(): Boolean {
+        val list = WtrAudioControlBridge.playTrackInputList.value
+        if (list.isEmpty()) return true
+        var enCharCount = 0
+        var foreignCharCount = 0
+        val sampleSize = minOf(list.size, 15)
+        for (i in 0 until sampleSize) {
+            val text = list[i]
+            for (char in text) {
+                if (char.isLetter() && char.code < 128) {
+                    enCharCount++
+                } else if (char in '\u4e00'..'\u9fa5' || char in '\u0400'..'\u04FF') {
+                    foreignCharCount++
+                }
+            }
+        }
+        return enCharCount >= foreignCharCount
+    }
+
     private fun detectLanguageTag(text: String): String {
         if (text.isEmpty()) return "en-US"
+        
+        // Prevent expensive 5-second TextToSpeech engine re-init delays and sudden voice shifts
+        // for stray/skipped foreign lines when the overall chapter matches English.
+        if (isPlaylistPrimarilyEnglish()) {
+            return "en-US"
+        }
+
         var zhCount = 0
         var ruCount = 0
         var enCount = 0

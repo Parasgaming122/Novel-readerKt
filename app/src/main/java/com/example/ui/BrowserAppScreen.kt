@@ -634,7 +634,14 @@ fun BrowserAppScreen(webView: WebView, onThemeChanged: (String) -> Unit = {}) {
                         val currentActive = viewModel.currentTab.value
                         val triggeringTab = viewModel.allTabs.value.find { it.id == tab.id }
                         val isWebUrl = syncedUrl.startsWith("http://") || syncedUrl.startsWith("https://")
-                        if (isWebUrl && currentActive?.id == tab.id && triggeringTab?.id == tab.id && (currentActive.url != syncedUrl || currentActive.title != htmlTitle) && currentActive.url != "chrome://newtab") {
+                        
+                        // ANTI-HIJACK: Verify the actual WebKit engine URL matches the expected tab metadata structure
+                        // before allowing dynamic in-page JS synchronization processes to override the active URL.
+                        val activeWV = webViewsMap[tab.id]
+                        val wvUrl = activeWV?.url ?: ""
+                        val isWebViewMatchingActive = wvUrl.isNotEmpty() && isSameBaseOrTranslatedUrl(wvUrl, currentActive?.url ?: "")
+
+                        if (isWebUrl && currentActive?.id == tab.id && triggeringTab?.id == tab.id && isWebViewMatchingActive && (currentActive.url != syncedUrl || currentActive.title != htmlTitle) && currentActive.url != "chrome://newtab") {
                             com.example.WtrLogManager.log(context, "onUrlSynced matching tab ID=${tab.id} synchronized to: $syncedUrl (title: $htmlTitle)")
                             coroutineScope.launch {
                                 viewModel.onPageLoaded(syncedUrl, htmlTitle)
@@ -658,7 +665,9 @@ fun BrowserAppScreen(webView: WebView, onThemeChanged: (String) -> Unit = {}) {
         } else if (currentActiveWebView?.canGoBack() == true) {
             currentActiveWebView.goBack()
         } else {
-            (context as? android.app.Activity)?.finish()
+            viewModel.handleBackNavigation {
+                (context as? android.app.Activity)?.finish()
+            }
         }
     }
 
@@ -2396,17 +2405,18 @@ fun BrowserAppScreen(webView: WebView, onThemeChanged: (String) -> Unit = {}) {
                     modifier = Modifier.fillMaxSize()
                 )
             } else if (activeTab != null && currentActiveWebView != null) {
-                key(activeTab!!.id) {
+                val tabForView = activeTab!!
+                key(tabForView.id) {
                     AndroidView(
                         factory = { 
                             val wv = currentActiveWebView!!
-                            if ((wv.url ?: "").isEmpty() && activeTab!!.url != "chrome://newtab") {
-                                wv.loadUrl(activeTab!!.url)
+                            if ((wv.url ?: "").isEmpty() && tabForView.url != "chrome://newtab") {
+                                wv.loadUrl(tabForView.url)
                             }
                             wv
                         },
                         update = { wv ->
-                            val targetUrl = activeTab?.url ?: ""
+                            val targetUrl = tabForView.url
                             if (targetUrl.isNotEmpty() && targetUrl != "chrome://newtab") {
                                 val currentUrl = wv.url ?: ""
                                 if (currentUrl.isEmpty()) {

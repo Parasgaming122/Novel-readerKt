@@ -108,6 +108,16 @@ Ensure you read this section before making any changes to WebView behaviors, lif
 - **Context**: The `BrowserAppScreen` handles primary extraction logic via WebView execution. However, `LaunchedEffect` hooks strictly pause operations if the application is running in the background while chapters are auto-advancing, causing features like automatic translation proxy delays or Gemini translation injections to stall indefinitely until the user reopens the app.
 - **Rule**: You **MUST NOT** use Compose state observers (`LaunchedEffect`) to trigger asynchronous web page loads, DOM JS extractions, or API calls if they require background resiliency. You **MUST** run all post-page load triggers directly inside the `WebViewClient`'s `onPageFinished` event hook, bypassing Compose dispatchers, launching via `viewModelScope.launch(Dispatchers.Main)` for guaranteed sustained background thread execution!
 
+### 13. Dynamic Language-Switching TTS Stalls (Stray Lines)
+
+- **Context**: On translated foreign pages, Google Translate may occasional miss paragraphs, leaving brief untranslated phrases. Standard TTS dynamic language checks would switch dialects on these lines, triggering an expensive 5-second TTS engine re-initialization sequence that froze playback.
+- **Rule**: Implement `isPlaylistPrimarilyEnglish` checking the core active queue characters. Under primarily English novels, enforce a static `"en-US"` tag output bypass to completely avoid engine re-init delays.
+
+### 14. Multi-Tab Navigation Isolation & Browser-standard Back Gesture Tab Closing
+
+- **Context**: Updating global `activeTab` states directly inside an unbounded `AndroidView` `update` block during tab-swapping causes the outgoing WebView to incorrectly navigate to the incoming URL before being disposed, causing duplicate pages.
+- **Rule**: Always isolate `AndroidView` factory and update lambda configurations using localized snapshot references (`val tabForView = activeTab!!`). Additionally, maintain `tabNavigationHistory` to register visits, enabling the system's back handler to close empty-history tabs and seamlessly scale backwards through active parent tabs.
+
 ---
 
 ## 📜 Complete Codebase Map

@@ -32,6 +32,19 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
 
     private var lastHistoryUrl: String? = null
 
+    // Backstack / Navigation History management for tabs
+    private val tabNavigationHistory = mutableListOf<Long>()
+
+    fun recordTabVisit(tabId: Long) {
+        if (tabId <= 0) return
+        tabNavigationHistory.removeAll { it == tabId }
+        tabNavigationHistory.add(tabId)
+    }
+
+    fun forgetTab(tabId: Long) {
+        tabNavigationHistory.removeAll { it == tabId }
+    }
+
     init {
         val db = AppDatabase.getDatabase(application)
         repository = BrowserRepository(db.browserDao())
@@ -56,6 +69,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                     val id = repository.insertTab(defaultTab)
                     _currentTab.value = defaultTab.copy(id = id)
                     _currentUrlInput.value = "chrome://newtab"
+                    recordTabVisit(id)
                 } else {
                     var current = tabsList.find { it.isCurrent } ?: tabsList.first()
                     // Validate URL is not malformed
@@ -66,6 +80,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                     }
                     _currentTab.value = current
                     _currentUrlInput.value = current.url
+                    recordTabVisit(current.id)
                 }
             } catch (e: Exception) {
                 com.example.WtrLogManager.log(getApplication(), "Session restoration failed, fallback to default tab: ${e.message}")
@@ -73,6 +88,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                 val id = repository.insertTab(defaultTab)
                 _currentTab.value = defaultTab.copy(id = id)
                 _currentUrlInput.value = "chrome://newtab"
+                recordTabVisit(id)
             }
         }
     }
@@ -99,6 +115,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             val id = repository.insertTab(newTab)
             _currentTab.value = newTab.copy(id = id)
             _currentUrlInput.value = url
+            recordTabVisit(id)
         }
     }
 
@@ -111,6 +128,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                     repository.updateTab(updated)
                     _currentTab.value = updated
                     _currentUrlInput.value = updated.url
+                    recordTabVisit(updated.id)
                 } else if (it.isCurrent) {
                     repository.updateTab(it.copy(isCurrent = false))
                 }
@@ -155,6 +173,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     fun closeTab(tab: TabEntry) {
         viewModelScope.launch {
             com.example.WtrLogManager.log(getApplication(), "closeTab requested: ID=${tab.id}, url=${tab.url}")
+            forgetTab(tab.id)
             val tabsList = repository.getAllTabs()
             if (tabsList.size <= 1) {
                 // If closing single last tab, just reset it to home
@@ -177,6 +196,38 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                     _currentTab.value = updated
                     _currentUrlInput.value = updated.url
                 }
+            }
+        }
+    }
+
+    fun handleBackNavigation(onFinish: () -> Unit) {
+        viewModelScope.launch {
+            val tabs = repository.getAllTabs()
+            val current = _currentTab.value
+            if (tabs.size > 1 && current != null) {
+                com.example.WtrLogManager.log(getApplication(), "handleBackNavigation closing current tab ID=${current.id}")
+                
+                // 1. Close the current tab
+                closeTab(current)
+                forgetTab(current.id)
+
+                // 2. Identify and navigate back to the previous active tab
+                val lastTabId = tabNavigationHistory.lastOrNull()
+                val targetTab = if (lastTabId != null) {
+                    tabs.find { it.id == lastTabId && it.id != current.id }
+                } else {
+                    null
+                }
+                
+                // Fallback to any remaining tab if history trace is unavailable
+                val fallbackTab = targetTab ?: tabs.firstOrNull { it.id != current.id }
+                if (fallbackTab != null) {
+                    switchToTab(fallbackTab)
+                } else {
+                    onFinish()
+                }
+            } else {
+                onFinish()
             }
         }
     }
