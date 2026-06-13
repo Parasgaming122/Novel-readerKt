@@ -95,7 +95,7 @@ fun isSameBaseOrTranslatedUrl(url1: String, url2: String): Boolean {
 
 @SuppressLint("SetJavaScriptEnabled")
 @Composable
-fun BrowserAppScreen(webView: WebView, onThemeChanged: (String) -> Unit = {}) {
+fun BrowserAppScreen(onThemeChanged: (String) -> Unit = {}) {
     val context = LocalContext.current
     val viewModel: BrowserViewModel = viewModel()
     
@@ -145,7 +145,7 @@ fun BrowserAppScreen(webView: WebView, onThemeChanged: (String) -> Unit = {}) {
     val defaultTranslateDomains = remember { WebsiteSupportRegistry.getAutoTranslateSites().joinToString(", ") }
     var autoTranslateDomains by remember { mutableStateOf(sharedPrefs.getString("auto_translate_domains", defaultTranslateDomains) ?: defaultTranslateDomains) }
     var geminiTranslateEnabled by remember { mutableStateOf(sharedPrefs.getBoolean("gemini_translate_enabled", false)) }
-    var geminiApiKey by remember { mutableStateOf(sharedPrefs.getString("gemini_api_key", "") ?: "") }
+    var geminiApiKey by remember { mutableStateOf(com.example.SecurePreferences.getGeminiApiKey(context)) }
     var adBlockerEnabled by remember { mutableStateOf(sharedPrefs.getBoolean("ad_blocker_enabled", true)) }
     var customTextZoom by remember { mutableStateOf(sharedPrefs.getInt("custom_text_zoom", 115)) }
     var antiCaptchaDelay by remember { mutableStateOf(sharedPrefs.getBoolean("anti_captcha_delay", false)) }
@@ -179,22 +179,6 @@ fun BrowserAppScreen(webView: WebView, onThemeChanged: (String) -> Unit = {}) {
 
     val focusManager = LocalFocusManager.current
     val keyboardController = LocalSoftwareKeyboardController.current
-
-    // Memory Leak Preventer
-    LaunchedEffect(tabsList) {
-        val currentTabIds = tabsList.map { it.id }.toSet()
-        val webViewIds = webViewsMap.keys.toSet()
-        val removedIds = webViewIds - currentTabIds
-        for (id in removedIds) {
-            val wv = webViewsMap.remove(id)
-            wv?.apply {
-                stopLoading()
-                clearHistory()
-                MainActivity.activeWebViewsPool.remove(this)
-                destroy()
-            }
-        }
-    }
 
     // Maintain a map of dynamic WebViews keyed by Tab ID
     var runHtmlTextExtractionAndPlayRef by remember { mutableStateOf<(() -> Unit)?>(null) }
@@ -310,26 +294,29 @@ fun BrowserAppScreen(webView: WebView, onThemeChanged: (String) -> Unit = {}) {
                             for (i in 0 until jsonArray.length()) paragraphsList.add(jsonArray.getString(i))
                         } catch (e: Exception) {}
                         if (paragraphsList.isNotEmpty()) {
-                            val translatedList = com.example.GeminiTranslator.translateParagraphs(paragraphsList, currentGeminiApiKey)
-                            val translationMapJson = org.json.JSONArray()
-                            translatedList.forEachIndexed { index, text ->
-                                val obj = org.json.JSONObject()
-                                obj.put("id", index)
-                                obj.put("text", text)
-                                translationMapJson.put(obj)
+                            val injectionJs = withContext(Dispatchers.IO) {
+                                val translatedList = com.example.GeminiTranslator.translateParagraphs(paragraphsList, currentGeminiApiKey)
+                                val translationMapJson = org.json.JSONArray()
+                                translatedList.forEachIndexed { index, text ->
+                                    val obj = org.json.JSONObject()
+                                    obj.put("id", index)
+                                    obj.put("text", text)
+                                    translationMapJson.put(obj)
+                                }
+                                val escapedJsonString = org.json.JSONObject.quote(translationMapJson.toString())
+                                """
+                                    (function() {
+                                        try {
+                                            const translations = JSON.parse(${escapedJsonString});
+                                            translations.forEach(item => {
+                                                const el = document.querySelector('[wtr-translation-id="' + item.id + '"]');
+                                                if (el) el.innerText = item.text;
+                                            });
+                                            return "success";
+                                        } catch(e) { return "error: " + e.toString(); }
+                                    })();
+                                """.trimIndent()
                             }
-                            val injectionJs = """
-                                (function() {
-                                    try {
-                                        const translations = ${translationMapJson.toString()};
-                                        translations.forEach(item => {
-                                            const el = document.querySelector('[wtr-translation-id="' + item.id + '"]');
-                                            if (el) el.innerText = item.text;
-                                        });
-                                        return "success";
-                                    } catch(e) { return "error: " + e.toString(); }
-                                })();
-                            """.trimIndent()
                             suspendCancellableCoroutine<String> { continuation ->
                                 webView.evaluateJavascript(injectionJs) { result ->
                                     if (continuation.isActive) continuation.resume(result ?: "")
@@ -398,10 +385,10 @@ fun BrowserAppScreen(webView: WebView, onThemeChanged: (String) -> Unit = {}) {
                     
                     // Native Caching and Performance Optimization
                     cacheMode = WebSettings.LOAD_DEFAULT
-                    allowFileAccess = true
-                    allowContentAccess = true
+                    allowFileAccess = false
+                    allowContentAccess = false
                     
-                    mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
+                    mixedContentMode = WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE
                     mediaPlaybackRequiresUserGesture = false
                     textZoom = customTextZoom
                     
@@ -504,6 +491,14 @@ fun BrowserAppScreen(webView: WebView, onThemeChanged: (String) -> Unit = {}) {
                         if (request?.isForMainFrame == true) {
                             com.example.WtrLogManager.log(context, "onReceivedError tab=${tab.id}: ${error?.description}")
                             
+                            val rawDesc = error?.description?.toString() ?: "Network error occurred."
+                            val safeDescription = rawDesc
+                                .replace("&", "&amp;")
+                                .replace("<", "&lt;")
+                                .replace(">", "&gt;")
+                                .replace("\"", "&quot;")
+                                .replace("'", "&#x27;")
+                            
                             val errorHtml = """
                                 <html>
                                 <head>
@@ -521,7 +516,7 @@ fun BrowserAppScreen(webView: WebView, onThemeChanged: (String) -> Unit = {}) {
                                 </head>
                                 <body>
                                     <h1>Navigation Failed</h1>
-                                    <p>${error?.description ?: "Network error occurred."}</p>
+                                    <p>${safeDescription}</p>
                                     <button class="btn" onclick="window.location.reload()">Try Again</button>
                                 </body>
                                 </html>
@@ -581,9 +576,10 @@ fun BrowserAppScreen(webView: WebView, onThemeChanged: (String) -> Unit = {}) {
                                             )
                                         } else {
                                             // Asynchronously prefetch so we don't block the WebView's resource loading pipeline
-                                            kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO).launch {
+                                            coroutineScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+                                                var connection: java.net.HttpURLConnection? = null
                                                 try {
-                                                    val connection = java.net.URL(url).openConnection() as java.net.HttpURLConnection
+                                                    connection = java.net.URL(url).openConnection() as java.net.HttpURLConnection
                                                     connection.connectTimeout = 3000
                                                     connection.readTimeout = 3000
                                                     if (connection.responseCode == 200) {
@@ -597,6 +593,8 @@ fun BrowserAppScreen(webView: WebView, onThemeChanged: (String) -> Unit = {}) {
                                                     }
                                                 } catch (e: Exception) {
                                                     // Ignore background prefetch errors
+                                                } finally {
+                                                    try { connection?.disconnect() } catch (ignored: Exception) {}
                                                 }
                                             }
                                             return null
@@ -681,9 +679,10 @@ fun BrowserAppScreen(webView: WebView, onThemeChanged: (String) -> Unit = {}) {
                 val wv = entry.value
                 try {
                     wv.stopLoading()
+                    wv.clearHistory()
                     wv.removeAllViews()
-                    wv.destroy()
                     MainActivity.activeWebViewsPool.remove(wv)
+                    wv.destroy()
                 } catch (e: Exception) {
                     e.printStackTrace()
                 }
@@ -2767,7 +2766,7 @@ fun BrowserAppScreen(webView: WebView, onThemeChanged: (String) -> Unit = {}) {
                         autoTranslateEnabled = sharedPrefs.getBoolean("auto_translate_enabled", true)
                         autoTranslateDomains = sharedPrefs.getString("auto_translate_domains", defaultTranslateDomains) ?: defaultTranslateDomains
                         geminiTranslateEnabled = sharedPrefs.getBoolean("gemini_translate_enabled", false)
-                        geminiApiKey = sharedPrefs.getString("gemini_api_key", "") ?: ""
+                        geminiApiKey = com.example.SecurePreferences.getGeminiApiKey(context)
                         adBlockerEnabled = sharedPrefs.getBoolean("ad_blocker_enabled", true)
                         customTextZoom = sharedPrefs.getInt("custom_text_zoom", 115)
                         antiCaptchaDelay = sharedPrefs.getBoolean("anti_captcha_delay", false)
@@ -3053,7 +3052,15 @@ private fun cleanUrlForTts(url: String): String {
             } else {
                 val host = uri.host ?: ""
                 if (host.isNotEmpty()) {
-                    val cleanHost = host.replace(".translate.goog", "").replace("-", ".")
+                    var cleanHost = host.replace(".translate.goog", "")
+                    // Google Translate encodes double-dash '--' as single dash '-', 
+                    // and single dot '.' as single dash '-'.
+                    // To decode: temporarily preserve double dashes '--' as a unique marker,
+                    // replace single '-' with '.', then replace the marker with '-'
+                    cleanHost = cleanHost.replace("--", "__DBL_DASH_MKR__")
+                    cleanHost = cleanHost.replace("-", ".")
+                    cleanHost = cleanHost.replace("__DBL_DASH_MKR__", "-")
+                    
                     val scheme = if (url.startsWith("https")) "https" else "http"
                     clean = "$scheme://$cleanHost${uri.path ?: ""}"
                 }
@@ -3212,7 +3219,10 @@ private fun getCleanDisplayUrl(url: String): String {
             }
             val host = uri.host ?: ""
             if (host.isNotEmpty()) {
-                val cleanHost = host.replace(".translate.goog", "").replace("-", ".")
+                var cleanHost = host.replace(".translate.goog", "")
+                cleanHost = cleanHost.replace("--", "__DBL_DASH_MKR__")
+                cleanHost = cleanHost.replace("-", ".")
+                cleanHost = cleanHost.replace("__DBL_DASH_MKR__", "-")
                 val scheme = if (url.startsWith("https")) "https" else "http"
                 return "$scheme://$cleanHost${uri.path ?: ""}"
             }

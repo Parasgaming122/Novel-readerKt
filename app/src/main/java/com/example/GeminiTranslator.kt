@@ -9,15 +9,64 @@ import org.json.JSONObject
 
 object GeminiTranslator {
     private const val SYSTEM_INSTRUCTION = """
-        You are an expert light novel localizer translating Chinese web novels into natural, engaging English.
-        You will receive a JSON array containing text blocks with their respective 'id'.
-            
-        Translation Rules:
-        1. Translate the 'text' fields cleanly while keeping the 'id' fields identical.
-        2. Maintain character name and pronoun consistency across IDs. 
-        3. Localize common Chinese web novel idioms/phrases naturally (e.g., do not literally translate 'you court death' or 'coughing up blood' if it breaks flow).
-        4. Output ONLY valid JSON matching the exact structure received. Do not include markdown wraps or explanations.
+        You are a professional literary translator and expert localizer specializing in Chinese web novels (including Xianxia, Wuxia, Xuanhuan, Danmei, LitRPG/System, and historical court intrigue). Your task is to translate each provided Chinese text segment into polished, publication-grade, and deeply immersive English.
+        
+        You will receive a JSON array of text blocks, each with an 'id' and 'text'. You MUST translate each block and return a JSON array matching the exact structure: [{"id": 0, "text": "Translated English text..."}, ...] without markdown or explanations.
+
+        CRITICAL TRANSLATION MANDATES:
+        1. THOUGHT-FOR-THOUGHT (NoveLM Style):
+           - Do NOT translate word-for-word. Capture the visceral energy, poetic flow, and dramatic momentum.
+           - Elevate literal raw translation to vivid prose. (e.g., Instead of "Xiao Yan's fighting energy burst like a volcano, strange fire condensed into long sword", translate to: "Xiao Yan's Dou Qi erupted like a dormant volcano, while the Heavenly Flame coalesced in his palm into a crimson greatsword.")
+           - Enhance dialogue, internal monologue, and scene descriptions to read like a professionally authored English novel.
+        
+        2. TRANSLATE IDIOMS & PHRASES (No Chinese Clichés):
+           - Convert Chinese machine clichés to elegant natural expressions:
+             * "You court death!" -> "You seek your own doom!" or "How dare you!"
+             * "Coughing up blood" -> "Spat a mouthful of blood" or "Gasped weakly"
+             * "Didn't know whether to laugh or cry" -> "Exasperated yet amused" or "Shook their head in amusement"
+             * "Face ashen" -> "Pale as death" or "White as a sheet"
+             * "Given an inch, advance ten feet" -> "Given an inch, they will seize a mile"
+        
+        3. NOVEL TERMINOLOGY & PROPER NOUNS:
+           - Character Personal Names: Retain in Chinese Pinyin (e.g., Xiao Yan, Xie Lian, San Lang) with standard spelling and spacing.
+           - Sects, Peaks, Domains, Cities, Weapons, and Titles: Translate into their elegant English equivalent meanings rather than raw transliteration (e.g., "Tian Guan" -> "Heavens", "一叶之秋" -> "One Autumn Leaf", "嘉世战队" -> "Team Jiashi").
+           - Constant Cultivation Realms & Energy terms: Use highly accurate, consistent terms (e.g., Dou Qi, Qi, Spiritual Energy, Dantian / Core, Foundation Establishment, Nascent Soul, etc.).
+        
+        4. NUMBER SCALING:
+           - Convert large Chinese numeral units (万 = 10,000, 亿 = 100 million) correctly and naturally to Western notation (e.g., "10万" -> "100,000" or "a hundred thousand", "1亿" -> "100,000,000" or "a hundred million").
+           
+        5. FORMATTING & BRACKETS:
+           - NEVER use wildcards, bold formatting, or outer conversational wrappers.
+           - Preserve all original layout punctuation and brackets such as 【】 and 『』 exactly as in the source.
+           
+        6. OUTPUT VALID JSON ARRAY ONLY:
+           - You must return ONLY the raw JSON array. Never wrap in ```json or add conversation. Strict conformance is mandatory.
     """
+
+    private var cachedModel: GenerativeModel? = null
+    private var cachedApiKey: String? = null
+
+    @Synchronized
+    private fun getModel(apiKey: String): GenerativeModel {
+        val currentModel = cachedModel
+        if (currentModel != null && cachedApiKey == apiKey) {
+            return currentModel
+        }
+        val newModel = GenerativeModel(
+            modelName = "gemini-2.5-flash",
+            apiKey = apiKey,
+            generationConfig = generationConfig {
+                responseMimeType = "application/json"
+                temperature = 0.3f
+            },
+            systemInstruction = com.google.ai.client.generativeai.type.content { 
+                text(SYSTEM_INSTRUCTION.trimIndent()) 
+            }
+        )
+        cachedModel = newModel
+        cachedApiKey = apiKey
+        return newModel
+    }
 
     suspend fun translateParagraphs(
         paragraphs: List<String>,
@@ -39,18 +88,8 @@ object GeminiTranslator {
             }
             val inputText = jsonInput.toString()
 
-            // 2. Initialize model instance
-            val model = GenerativeModel(
-                modelName = "gemini-2.5-flash",
-                apiKey = apiKey,
-                generationConfig = generationConfig {
-                    responseMimeType = "application/json"
-                    temperature = 0.3f
-                },
-                systemInstruction = com.google.ai.client.generativeai.type.content { 
-                    text(SYSTEM_INSTRUCTION.trimIndent()) 
-                }
-            )
+            // 2. Initialize or get cached model instance
+            val model = getModel(apiKey)
 
             // 3. Call generate content
             val response = model.generateContent(inputText)

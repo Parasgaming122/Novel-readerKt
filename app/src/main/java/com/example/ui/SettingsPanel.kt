@@ -86,7 +86,7 @@ fun SettingsPanel(
     val defaultTranslateDomains = remember { WebsiteSupportRegistry.getAutoTranslateSites().joinToString(", ") }
     var autoTranslateDomains by remember { mutableStateOf(sharedPrefs.getString("auto_translate_domains", defaultTranslateDomains) ?: defaultTranslateDomains) }
     var geminiTranslateEnabled by remember { mutableStateOf(sharedPrefs.getBoolean("gemini_translate_enabled", false)) }
-    var geminiApiKey by remember { mutableStateOf(sharedPrefs.getString("gemini_api_key", "") ?: "") }
+    var geminiApiKey by remember { mutableStateOf(com.example.SecurePreferences.getGeminiApiKey(context)) }
     var antiCaptchaDelay by remember { mutableStateOf(sharedPrefs.getBoolean("anti_captcha_delay", false)) }
     var adBlockerEnabled by remember { mutableStateOf(sharedPrefs.getBoolean("ad_blocker_enabled", true)) }
     var customTextZoom by remember { mutableStateOf(sharedPrefs.getInt("custom_text_zoom", 115)) }
@@ -853,7 +853,7 @@ fun SettingsPanel(
                                     value = geminiApiKey,
                                     onValueChange = { 
                                         geminiApiKey = it
-                                        sharedPrefs.edit().putString("gemini_api_key", it).apply()
+                                        com.example.SecurePreferences.setGeminiApiKey(context, it)
                                     },
                                     label = { Text("Gemini API Key", fontSize = 10.sp) },
                                     placeholder = { Text("AIzaSy...", fontSize = 10.sp) },

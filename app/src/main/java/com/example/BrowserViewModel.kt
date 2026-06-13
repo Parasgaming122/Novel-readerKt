@@ -6,6 +6,7 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.data.*
 import com.example.sites.WebsiteSupportRegistry
+import androidx.room.withTransaction
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
@@ -400,7 +401,6 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                     val defaultTranslate = WebsiteSupportRegistry.getAutoTranslateSites().joinToString(", ")
                     put("auto_translate_domains", sharedPrefs.getString("auto_translate_domains", defaultTranslate))
                     put("gemini_translate_enabled", sharedPrefs.getBoolean("gemini_translate_enabled", false))
-                    put("gemini_api_key", sharedPrefs.getString("gemini_api_key", ""))
                     put("ad_blocker_enabled", sharedPrefs.getBoolean("ad_blocker_enabled", true))
                 }
                 writer.write(settingsJson.toString())
@@ -553,19 +553,22 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                 val db = AppDatabase.getDatabase(context)
                 val dao = db.browserDao()
 
-                // Restore tables
-                dao.clearHistory()
-                backupData.history.forEach { dao.insertHistory(it) }
-
-                dao.clearBookmarks()
-                backupData.bookmarks.forEach { dao.insertBookmark(it) }
-
-                dao.clearTabs()
                 var currentTabToLoad: TabEntry? = null
-                backupData.tabs.forEach { tab ->
-                    val newId = dao.insertTab(tab)
-                    if (tab.isCurrent) {
-                        currentTabToLoad = tab.copy(id = newId)
+
+                // Restore tables inside a single atomic SQLite transaction
+                db.withTransaction {
+                    dao.clearHistory()
+                    backupData.history.forEach { dao.insertHistory(it) }
+
+                    dao.clearBookmarks()
+                    backupData.bookmarks.forEach { dao.insertBookmark(it) }
+
+                    dao.clearTabs()
+                    backupData.tabs.forEach { tab ->
+                        val newId = dao.insertTab(tab)
+                        if (tab.isCurrent) {
+                            currentTabToLoad = tab.copy(id = newId)
+                        }
                     }
                 }
 

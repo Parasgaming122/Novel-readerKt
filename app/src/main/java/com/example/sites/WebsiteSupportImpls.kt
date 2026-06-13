@@ -21,7 +21,7 @@ class WtrLabSupport : WebsiteSupport {
 class WebNovelSupport : WebsiteSupport {
     override val siteId = "webnovel"
     override val domains = listOf("webnovel.com")
-    override val keywords = listOf("web")
+    override val keywords = listOf("webnovel")
     override val requiresAutoTranslate = false
 
     override val containerSelectors = listOf(".cha-content", ".chapter-content", ".cha-words", ".chapter-inner")
@@ -37,7 +37,7 @@ class WebNovelSupport : WebsiteSupport {
 class NovelHallSupport : WebsiteSupport {
     override val siteId = "novelhall"
     override val domains = listOf("novelhall.com", "novelhall.net")
-    override val keywords = listOf("nov", "no", "novel")
+    override val keywords = listOf("novelhall")
     override val requiresAutoTranslate = false
 
     override val containerSelectors = listOf("#htmlContent", ".entry-content", ".active")
@@ -74,7 +74,7 @@ class FanMtlSupport : WebsiteSupport {
 
 class NovelBinSupport : WebsiteSupport {
     override val siteId = "novelbin"
-    override val domains = listOf("novelbin.com", "novelbin.net")
+    override val domains = listOf("novelbin.com", "novelbin.net", "novelbin.me")
     override val keywords = listOf("novelbin")
     override val requiresAutoTranslate = false
 
@@ -139,7 +139,7 @@ class Novel543Support : WebsiteSupport {
 class TwkanSupport : WebsiteSupport {
     override val siteId = "twkan"
     override val domains = listOf("twkan.com")
-    override val keywords = listOf("twkan", "tw")
+    override val keywords = listOf("twkan")
     override val requiresAutoTranslate = true
 
     override val containerSelectors = listOf("#htmlContent", "#content", ".active", ".read-content", ".article-content")

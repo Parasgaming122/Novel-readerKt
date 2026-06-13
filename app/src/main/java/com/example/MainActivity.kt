@@ -52,9 +52,7 @@ class MainActivity : ComponentActivity() {
             var activeThemeName by remember { mutableStateOf(sharedPrefs.getString("app_theme", "Dark") ?: "Dark") }
 
             MyApplicationTheme(themeName = activeThemeName) {
-                // Pass a placeholder WebView so the function signature is kept, but internally we use our pool!
                 BrowserAppScreen(
-                    webView = WebView(this),
                     onThemeChanged = { newTheme ->
                         activeThemeName = newTheme
                     }

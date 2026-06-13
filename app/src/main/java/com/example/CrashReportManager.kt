@@ -13,10 +13,16 @@ object CrashReportManager {
         override fun initialValue() = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US)
     }
     
+    private var appContextRef: java.lang.ref.WeakReference<Context>? = null
+    
     fun init(context: Context) {
+        appContextRef = java.lang.ref.WeakReference(context.applicationContext)
         val originalHandler = Thread.getDefaultUncaughtExceptionHandler()
         Thread.setDefaultUncaughtExceptionHandler { thread, exception ->
-            saveCrashReport(context, thread, exception)
+            val ctx = appContextRef?.get()
+            if (ctx != null) {
+                saveCrashReport(ctx, thread, exception)
+            }
             // Rethrow to let system handle it
             originalHandler?.uncaughtException(thread, exception)
         }

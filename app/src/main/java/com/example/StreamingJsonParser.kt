@@ -62,22 +62,37 @@ object StreamingJsonParser {
                     }
                     "history" -> {
                         reader.beginArray()
+                        var count = 0
                         while (reader.hasNext()) {
+                            if (count >= 1000) {
+                                throw Exception("Backup history exceeds security limit of 1000 items")
+                            }
                             history.add(parseHistoryEntry(reader))
+                            count++
                         }
                         reader.endArray()
                     }
                     "bookmarks" -> {
                         reader.beginArray()
+                        var count = 0
                         while (reader.hasNext()) {
+                            if (count >= 1000) {
+                                throw Exception("Backup bookmarks exceed security limit of 1000 items")
+                            }
                             bookmarks.add(parseBookmarkEntry(reader))
+                            count++
                         }
                         reader.endArray()
                     }
                     "tabs" -> {
                         reader.beginArray()
+                        var count = 0
                         while (reader.hasNext()) {
+                            if (count >= 100) {
+                                throw Exception("Backup tabs exceed security limit of 100 items")
+                            }
                             tabs.add(parseTabEntry(reader))
+                            count++
                         }
                         reader.endArray()
                     }

@@ -764,8 +764,9 @@ class WtrBrowserService : Service() {
                 startForeground(NOTIFICATION_ID, notification)
             }
         } catch (e: Exception) {
-            WtrLogManager.log(applicationContext, "⚠️ startForeground failed Safely: ${e.message}")
+            WtrLogManager.log(applicationContext, "❌ startForeground failed: ${e.message}. Stopping service to avoid background ANR.")
             e.printStackTrace()
+            try { stopSelf() } catch (ignored: Exception) {}
         }
 
         // Manage WakeLock & WifiLock based on playing state (called after startForeground for correct AppOps association)

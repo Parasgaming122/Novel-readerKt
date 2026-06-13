@@ -1,0 +1,73 @@
+name: Build and Release Release APK
+
+on:
+  workflow_dispatch: # Manual trigger only, doesn't auto-run
+
+jobs:
+  build:
+    name: Build & Release Android Release APK
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: write
+      packages: read
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # Fetch all history for automatic tagging and release logs
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: "17"
+          distribution: "temurin"
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: wrapper
+
+      - name: Generate Release Keystore (Fallback)
+        run: |
+          if [ ! -f my-upload-key.jks ]; then
+            keytool -genkey -v -keystore my-upload-key.jks -storepass "${{ secrets.STORE_PASSWORD || 'android' }}" -alias upload -keypass "${{ secrets.KEY_PASSWORD || 'android' }}" -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Release,O=Android,C=US"
+          fi
+
+      - name: Build Release APK
+        run: gradle assembleRelease --no-daemon
+        env:
+          STORE_PASSWORD: ${{ secrets.STORE_PASSWORD || 'android' }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD || 'android' }}
+          KEYSTORE_PATH: my-upload-key.jks
+
+      - name: Locate and Select APK
+        id: apk
+        run: |
+          APK_PATH=$(find app/build/outputs/apk/release -name "*.apk" -type f | head -1)
+          if [ -z "$APK_PATH" ]; then
+            echo "Error: Release APK file not found!"
+            exit 1
+          fi
+          echo "APK found at: $APK_PATH"
+          echo "apk_path=${APK_PATH}" >> $GITHUB_OUTPUT
+
+      - name: Determine Next SemVer Version
+        id: version
+        uses: reecetech/version-increment@2024.4.3
+        with:
+          scheme: semver
+          increment: patch
+
+      - name: Create Release and Upload APK
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: "release-${{ steps.version.outputs.v-version }}"
+          name: "Release ${{ steps.version.outputs.v-version }}"
+          files: ${{ steps.apk.outputs.apk_path }}
+          generate_release_notes: true
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

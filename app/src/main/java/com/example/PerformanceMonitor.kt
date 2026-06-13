@@ -11,6 +11,7 @@ object PerformanceMonitor {
     data class MemoryStats(
         val nativeHeap: Long,
         val javaHeap: Long,
+        val maxJavaHeap: Long,
         val totalRss: Long
     )
     
@@ -23,6 +24,7 @@ object PerformanceMonitor {
         return MemoryStats(
             nativeHeap = Debug.getNativeHeapSize(),
             javaHeap = runtime.totalMemory() - runtime.freeMemory(),
+            maxJavaHeap = runtime.maxMemory(),
             totalRss = memInfo.totalMem
         )
     }
@@ -35,7 +37,8 @@ object PerformanceMonitor {
             try {
                 delay(intervalMs)
                 val stats = getMemoryStats(context)
-                val heapUsagePercent = (stats.javaHeap * 100) / stats.totalRss
+                val maxHeapLimit = if (stats.maxJavaHeap > 0L) stats.maxJavaHeap else 1L
+                val heapUsagePercent = (stats.javaHeap * 100) / maxHeapLimit
                 
                 if (heapUsagePercent > 80) {
                     WtrLogManager.log(
