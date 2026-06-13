@@ -1,168 +1,412 @@
-# AI Agent Onboarding Checklist & Architectural Rules (AGENTS.md)
+# AGENTS.md — Novel Reader (Wtr-Lab Browser)
 
-This file serves as the permanent context, directory roadmap, and operational memory for any future AI Coding Agent continuing development on the Novel Reader application. **Do not remove or modify this file unless explicitly instructed by the user.**
-
----
-
-## 🧭 Project Coordinates & Tech Stack
-
-- **Context**: A premium, native Android web browser optimized specifically for reading, listening (Text-To-Speech), and auto-translating web novels.
-- **UI Architecture**: Jetpack Compose, Material Design 3.
-- **Async Concurrency**: Kotlin Coroutines & Kotlin Flows (`StateFlow`, `collectAsStateWithLifecycle`).
-- **Data Persistence**: Android Room SQLite Local Database (`tabs`, `history`, `bookmarks`).
-- **Web Engine**: Android System WebKit WebViews managed in a global concurrent pool (`MainActivity.activeWebViewsPool`) to avoid context leaks.
+> AI agent onboarding document. Provides permanent context to prevent regressions.
+> **Do not remove or modify unless explicitly instructed.**
 
 ---
 
-## 🧭 Project Documentation Index
+## 1. Project Identity
 
-For deep architectural and implementation details, refer to:
+| Field | Value |
+|---|---|
+| **Name** | Novel Reader (Wtr-Lab Browser) |
+| **Type** | Single-module Android app (Jetpack Compose + WebView + TTS) |
+| **App ID** | `com.paras.novelreader` |
+| **Package** | `com.example` |
+| **Min SDK** | 24 (Android 7.0) |
+| **Target SDK** | 36 |
+| **Namespace** | `com.example` |
 
-- [🚀 Architecture Overview](docs/ARCHITECTURE_OVERVIEW.md): System-wide topology and state flow synchronization rules.
-- [📱 Core Engine Manual](docs/CORE_ENGINE.md): Detailed internals of background services, bridges, view models, and telemetry.
-- [🎨 UI Subsystem Guide](docs/UI_LAYER.md): Compose layouts, views, settings overlays, and JS scrapers.
-- [🗄️ Data Layer Schema](docs/DATA_LAYER.md): Room database entities, DAO queries, repositories, and Regex parsing heuristics.
-- [🛠️ Complete Fixes Log](docs/fixes.md): Exhaustive debugging history, memory limiters, safe streams, and anti-CAPTCHA implementations.
-
----
-
-## ⚠️ Critical Lessons & Past Defect Diagnostics
-
-Ensure you read this section before making any changes to WebView behaviors, lifecycle hooks, or navigation methods to prevent regressions:
-
-### 1. Active Tab URL Synchronization & Background Hijacking (CRITICAL)
-
-- **Defect**: Inactive background tabs finishing page loads or executing timers in the background would trigger standard `@JavascriptInterface` bridge callbacks (`onUrlSynced`). If left unchecked, this would overwrite the active tab's address bar, resulting in flashing, random redirects, or freezing the screen back to previous URLs.
-- **Rule**: You **MUST** always safely resolve the _currently active tab_ via `viewModel.currentTab.value` and verify that the triggering WebView belongs to the active tab:
-  ```kotlin
-  val currentActive = viewModel.currentTab.value
-  val isWebUrl = syncedUrl.startsWith("http://") || syncedUrl.startsWith("https://")
-  if (isWebUrl && currentActive?.id == tab.id && currentActive.url != syncedUrl) {
-      // Execute UI address updates only if active!
-  }
-  ```
-- **Constraint**: Do not use stale closures (`activeTab?.id`) where references can get mismatched during page swaps.
-
-### 2. Modern Web Client User-Agents (UA)
-
-- **Defect**: Truncated, malformed, or typo-ridden client user-agents (e.g. `Android 14; K; K`) trigger strict browser bot safeguards, causing host sites to dump into blank pages, display infinite loops of security challenge validations, or reject connections with 403 Forbidden screens.
-- **Rule**: When setting user-agent, always apply complete, standard, representative mobile or desktop client headers:
-  ```kotlin
-  // Standard Mobile User-Agent:
-  val mobileUA = "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36"
-  // Standard Desktop User-Agent:
-  val desktopUA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
-  ```
-
-### 3. Integrated Coroutine Telemetry (`com.example.WtrLogManager`)
-
-- **Utility**: In-app diagnostic logging operates off an in-memory thread-safe state list capped at 100 historical records, displaying system actions, page loads, and audio bounds.
-- **Rule**: Write logs proactively using `WtrLogManager.log(context, "message")`. Disk writing of serialized logs is delegated cleanly to a dedicated background Coroutine Scope `loggerScope` running on `Dispatchers.IO` to protect UI responsiveness.
-- **Settings Toggle**: Logging is user-controlled via `enable_logs` in Shared Preferences. Respect this flag internally.
-- **Exporting Logs**: Under active debugging, users can download logs as plain text files through the "Save as TXT" option in the Diagnostic popup modal, which launches standard Storage Access Framework loaders.
-
-### 4. Smart Saving of Paragraphs, Translate, and TTS Auto-Next Coordination
-
-- **Context**: The TTS polyfill replaces standard browser WebSpeech bindings. Reading position autosave (`remember_paragraphs`), auto-translation scraper, and next-chapter loading have overlapping timing cycles.
-- **Rule**: Keep state clean. Prior to starting new speech sequences or navigating, cancel previous translation scraping coroutines and flush active speaker channels (`QUEUE_FLUSH`) inside the Foreground service context to prevent multi-voice overlays or database state conflicts.
-
-### 5. Integrity of the JavaScript Bridge for Wtr-Lab (CRITICAL AD-BLOCKER DETECTION WARNING)
-
-- **Context**: The JavaScript bridge (`WtrWebAppInterface` and the window injection bindings) must **NEVER** be removed, bypassed, or globally disabled for wtr-lab.com or companion reader engines. Wtr-Lab employs an extremely sensitive, proprietary script-monitoring system that tracks background TTS playback and WebSpeech api signals.
-- **Rule**: Bypassing or deleting the bridge interactions causes the target website script tracking to fail, which triggers its automated security defenses, labeling the browser as having a hostile **ad-blocker** fully active. This will instantly halt webpage loading or lock the reader view. Always route speech play/pause/cancel events back through the bridge callbacks or let the background timer mechanism handle takeovers seamlessly.
-
-### 6. Tab-scoped TTS Isolation and Concurrent Playback
-
-- **Context**: Users expect to keep listening to TTS audio on tab A while switching to tab B to search or browse other chapters.
-- **Rule**: Standard player controls are scoped to the active TTS tab ID (`WtrAudioControlBridge.activeTtsTabId`). Playback state resets or transitions must never occur upon tab switching unless the user explicitly starts a new TTS session on the newly opened tab, in which case the previous tab's TTS is cleared and the new tab takes ownership.
-
-### 7. Infinite Layout Chapters and Visual Scroll Alignment
-
-- **Context**: Sites like `webnovel.com` load chapters dynamically inside sequential visual containers when the reading user scrolls vertically.
-- **Rule**: Scraper routines must extract paragraphs across multiple concurrent content containers, keeping track of elements in the DOM. To start reading naturally from the user's current reading point rather than always starting from paragraph 1, the script must calculate elements' positions in the viewport, selecting the paragraph closest to the top of the viewport (`rect.top - 100`). Additionally, junk filter arrays must explicitly purge any background-inserted ad-blocker detection warn texts.
-
-### 8. Robust Backup & Restore Synchronization via SAF Uri (STREAMING & SECURE)
-
-- **Context**: Processing large backup archives (e.g. 100MB+) previously resulted in severe memory spikes (~150-200MB), ANR warnings, and memory-fatality crashes on devices with restricted RAM, because the entire backup file was loaded into memory as a massive flat String before parsing via traditional `JSONObject`.
-- **Rule**: You **MUST** always utilize `StreamingJsonParser.kt` and its native Android `JsonReader`-based pull-parsing mechanism for JSON imports. This processes backup files incrementally from the input stream, parsing Settings, History, Bookmarks, and Tabs sequentially to ensure a static, ultra-low memory footprint (<10MB) on any device.
-- **Rules on Restore**: Restores must execute inside `Dispatchers.IO` with a strict `30000mL` (30-second) coroutine timeout. SharedPreferences settings must be restored type-safely, and database tables (`clearHistory`, `clearBookmarks`, `clearTabs`) MUST be wiped in proper sequential order before inserting the restored lists. The ViewModel must successfully re-evaluate the active tab ID state (`_currentTab.value = restoredTab`) to prevent empty WebViews from initializing on startup.
-- **Database Integrity Validation**: Invoke `BrowserRepository.validateDatabaseIntegrity(context)` to verify the health of history, bookmarks, and tabs tables. Avoid passing `null` contexts to `WtrLogManager.log`—always feed a valid context parameter down the flow.
-
-### 9. Google Translate CAPTCHA Anti-Looping and Interceptors
-
-- **Context**: Rapid chapter-flipping on regional untrusted links translation proxy loops mimics automated search bots, which triggers aggressive Google CAPTCHA challenge screens.
-- **Rule**: Include an explicit anti-CAPTCHA timing lock (4500ms Handler post delay and user notification Toasts) on translated chapter change requests when executing auto-advancing TTS routines. This delay is customizable via a user preference switch `anti_captcha_delay`.
-
-### 10. Local WebView Asset Caching Engine
-
-- **Context**: Rapidly switching tabs, loading next chapters, or loading assets on `wtr-lab.com` incurs significant speed penality on pure network roundtrips.
-- **Rule**: Keep dynamic in-memory interceptors active in `shouldInterceptRequest` for `wtr-lab.com` static extension types (`.js`, `.css`, `.png`, `.woff`, `.woff2`, `.ttf`). Load resources from local disk cache (`cacheDir/wtr_static_cache`) instead of hitting the network to guarantee maximum tab switching/scrolling speed.
-
-### 11. Premium Gemini Translation Isolation & Bypass Logic (CRITICAL)
-
-- **Context**: Users expect Chinese/foreign web novels on auto-translation domains to translate with high-quality contextual localizations using Gemini API. Normal webpages (like catalog interfaces, search engines, standard portals) should not be processed via expensive Gemini APIs and continue utilizing the default Google Translate proxy instead.
-- **Rule**: If `gemini_translate_enabled` is active with an API key, the browser intercepts matched domain routes and blocks standard proxy redirects (i.e. `shouldTranslateUrl` returns `false`) ONLY IF the URL matches the `isNovelChapterUrl(...)` query format. Once loaded, the browser triggers the visual paragraph extraction and replacement, subsequently feeding the translated text array back to the active reader TTS speech engine.
-
-### 12. Background Execution & Jetpack Compose Lifecycle Restraints (CRITICAL)
-
-- **Context**: The `BrowserAppScreen` handles primary extraction logic via WebView execution. However, `LaunchedEffect` hooks strictly pause operations if the application is running in the background while chapters are auto-advancing, causing features like automatic translation proxy delays or Gemini translation injections to stall indefinitely until the user reopens the app.
-- **Rule**: You **MUST NOT** use Compose state observers (`LaunchedEffect`) to trigger asynchronous web page loads, DOM JS extractions, or API calls if they require background resiliency. You **MUST** run all post-page load triggers directly inside the `WebViewClient`'s `onPageFinished` event hook, bypassing Compose dispatchers, launching via `viewModelScope.launch(Dispatchers.Main)` for guaranteed sustained background thread execution!
-
-### 13. Dynamic Language-Switching TTS Stalls (Stray Lines)
-
-- **Context**: On translated foreign pages, Google Translate may occasional miss paragraphs, leaving brief untranslated phrases. Standard TTS dynamic language checks would switch dialects on these lines, triggering an expensive 5-second TTS engine re-initialization sequence that froze playback.
-- **Rule**: Implement `isPlaylistPrimarilyEnglish` checking the core active queue characters. Under primarily English novels, enforce a static `"en-US"` tag output bypass to completely avoid engine re-init delays.
-
-### 14. Multi-Tab Navigation Isolation & Browser-standard Back Gesture Tab Closing
-
-- **Context**: Updating global `activeTab` states directly inside an unbounded `AndroidView` `update` block during tab-swapping causes the outgoing WebView to incorrectly navigate to the incoming URL before being disposed, causing duplicate pages.
-- **Rule**: Always isolate `AndroidView` factory and update lambda configurations using localized snapshot references (`val tabForView = activeTab!!`). Additionally, maintain `tabNavigationHistory` to register visits, enabling the system's back handler to close empty-history tabs and seamlessly scale backwards through active parent tabs.
+> **DO NOT refactor the `com.example` package to `com.paras.novelreader`.** ProGuard keep rules, `-keepattributes` annotations, and the `namespace` in `build.gradle.kts` all reference `com.example`. Changing the package breaks release builds silently.
 
 ---
 
-## 📜 Complete Codebase Map
+## 2. Tech Stack
 
-- `/.github/workflows/build-apk.yml`
-  - _CI/CD pipeline: automates building debug APKs upon pushing to GitHub `main` branch, generating SemVer patches, and compiling Github releases with APK binaries._
-- `/app/src/main/java/com/example/MainActivity.kt`
-  - _Main entry point, bootstrap, permission handlers, theme, and WebView pool listeners._
-- `/app/src/main/java/com/example/BrowserViewModel.kt`
-  - _Core VM: tab operations, history logs, search inputs, query validation, and export/import JSON backup logic._
-- `/app/src/main/java/com/example/StreamingJsonParser.kt`
-  - _Highly optimized, memory-efficient streaming JSON pull-parser using native Android `JsonReader` for backup import parsing._
-- `/app/src/main/java/com/example/GeminiTranslator.kt`
-  - _High-throughput contextual novel localizer interface integrating Google Generative AI Android SDK to translate foreign paragraphs in-place._
-- `/app/src/main/java/com/example/WtrLogManager.kt`
-  - _Thread-safe ring-buffer list logging operations, persisted via split serialization inside SharedPreferences using background Coroutines._
-- `/app/src/main/java/com/example/WtrWebAppInterface.kt`
-  - _Bridges Javascript string variables, paragraph indexes, and media play states into Android native JVM streams._
-- `/app/src/main/java/com/example/WtrBrowserService.kt`
-  - _Foreground service handling CPU locks, lockscreen notifications throttled at 1.5s gates, and TextToSpeech queues._
-- `/app/src/main/java/com/example/BackupEncryption.kt`
-  - _Secure backup utility generating hardware Store-backed AES keys for database file encryption and decryption routines._
-- `/app/src/main/java/com/example/CrashReportManager.kt`
-  - _Thread boundary uncaught exception handler creating offline crash logs inside private application storage._
-- `/app/src/main/java/com/example/PerformanceMonitor.kt`
-  - _Background thread loop validating system RAM consumption, triggering heap alerts, and GC requests._
-- `/app/src/main/java/com/example/NetworkErrorHandler.kt`
-  - _Exponential backoff retry wrapper to automatically recover from slow or intermittent connection errors._
-- `/app/src/main/java/com/example/ui/`
-  - `BrowserAppScreen.kt`: _The core parent container rendering search bar, bottom audio shelf, and nested WebViews. Includes SAF txt logger savers._
-  - `SettingsDialog.kt`: _Settings panel for speech parameters, force-dark css, ad-blocker, cookies, diagnostic options, and the interactive JSON Backup / Restore importer launcher using Uri streams._
-  - `ChromeNewTabPage.kt`: _Default screen rendering shortcuts, recent history rows, and search inputs._
-  - `TabsPanel.kt`: _Double-grid UI folders to manage standalone tabs or nested tab folders._
-- `/app/src/main/java/com/example/data/`
-  - _Room database configurations decoupling database tables (`BookmarkEntry`, `HistoryEntry`, `TabEntry`) with simple repository patterns, advanced RegEx chapter title parsers, and clean table-wipe queries._
+| Component | Version / Details |
+|---|---|
+| **Kotlin** | 2.2.10 (compose compiler plugin) |
+| **AGP** | 9.1.1 |
+| **Gradle** | Configuration cache enabled |
+| **Compose BOM** | 2024.09.00 |
+| **Material 3** | `androidx.compose.material3` |
+| **Room** | 2.7.0 (KSP, `fallbackToDestructiveMigration`, DB v4) |
+| **Coroutines** | 1.10.2 (core + android) |
+| **StateFlow / SharedFlow** | Reactive state throughout ViewModel and Bridge objects |
+| **Google Generative AI** | 0.9.0 (Gemini 2.5 Flash, `responseMimeType = "application/json"`) |
+| **OkHttp** | 4.10.0 + logging-interceptor |
+| **Retrofit** | 2.12.0 + converter-moshi |
+| **Moshi** | 1.15.2 + codegen (KSP) |
+| **Coil** | 2.7.0 |
+| **KSP** | 2.3.5 |
+| **ProGuard** | `proguard-android-optimize.txt` + custom `proguard-rules.pro` |
+| **Secrets** | Secrets Gradle Plugin 2.0.1 (`.env` / `.env.example`) |
+| **Web Engine** | Android WebView (WebKit), `setJavaScriptEnabled = true` |
 
 ---
 
-## 🌐 Supported Website Registry & Scraper Patterns
+## 3. Critical Rules
 
-The reader engine has specialized scraper logic for the following domains:
+### Rule 1: Active Tab URL Synchronization
 
-- **Wtr-Lab** (`wtr-lab.com`): Primary target with deep JS bridge integration.
-- **WebNovel** (`webnovel.com`): Dynamic container extraction with ad-blocker detection bypass.
-- **NovelHall / FanMtl / NovelBin / FreeWebNovel**: standard CSS selector extraction.
-- **TimoTxt / Novel543 / Twkan**: High-priority auto-translation domains with specialized junk filtering.
-- **NovelHub** (`novelhub.net`): English-first domain with standard `#chr-content` or `.chapter-content` extraction.
-- **NovelHubApp** (`novelhubapp.com`): Single-page reader app with dynamic navigation. Tracking implemented via client-side hash injection to ensure chapter uniqueness in history.
+**Background tab `onPageFinished` MUST NOT hijack Tab A's address bar.**
+
+In `WtrWebAppInterface.syncUrl()`, the tab checks `WtrAudioControlBridge.currentlyActiveTabId.value == tab.id` before invoking the callback:
+
+```kotlin
+// WtrWebAppInterface.kt line 12
+@JavascriptInterface
+fun syncUrl(url: String, title: String) {
+    if (WtrAudioControlBridge.currentlyActiveTabId.value == tabId) {
+        onUrlSynced(url, title)
+    }
+}
+```
+
+In `BrowserAppScreen`, the `onUrlSynced` lambda performs a triple-gate check — active tab ID match, triggering tab ID match, and WebView URL match — before updating state:
+
+```kotlin
+// BrowserAppScreen.kt ~line 643
+if (isWebUrl && currentActive?.id == tab.id
+    && triggeringTab?.id == tab.id
+    && isWebViewMatchingActive
+    && (currentActive.url != syncedUrl || currentActive.title != htmlTitle)
+    && currentActive.url != "chrome://newtab") { ... }
+```
+
+**Never** use stale closures like `activeTab?.id` where references can get mismatched during page swaps.
+
+### Rule 2: Modern User-Agent String
+
+WebView MUST use a current, well-formed UA. Older/truncated UAs trigger bot detection on novel sites (403, blank pages, CAPTCHA loops).
+
+```kotlin
+// Mobile (default) — BrowserAppScreen.kt line 411
+"Mozilla/5.0 (Linux; Android 14; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Mobile Safari/537.36"
+
+// Desktop — BrowserAppScreen.kt line 409
+"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
+```
+
+UA is also forced in the `AndroidView` update block (~line 703) if a mismatch is detected.
+
+### Rule 3: Coroutine Telemetry via WtrLogManager
+
+ALL coroutine launches in important operations MUST log start/completion via `WtrLogManager.log()`:
+
+```kotlin
+WtrLogManager.log(context, "description of operation")
+```
+
+- Ring buffer of 100 entries, newest-first (`_logs.add(0, formatted)`).
+- Persisted to `SharedPreferences("wtr_browser_settings")` under key `"saved_logs_serialized"`, serialized with `"||LC||"` delimiter.
+- Background writes via dedicated `loggerScope` on `Dispatchers.IO`.
+- User toggle: `"enable_logs"` boolean in SharedPreferences.
+- Export: "Save as TXT" in Diagnostic popup via Storage Access Framework.
+- **Always pass a valid `context` parameter.** Passing `null` skips persistence.
+
+### Rule 4: Smart Paragraph Saving / Translate / TTS Coordination
+
+The TTS pipeline and Gemini translation have overlapping timing. The sequence MUST be:
+
+1. Extract paragraphs from DOM
+2. If Gemini is active: translate paragraphs → inject translated text back into DOM
+3. **THEN** extract paragraphs for TTS (after translation completes)
+
+The `isGeminiTranslating` boolean state flag gates extraction in `BrowserAppScreen` (~line 266):
+
+```kotlin
+var isGeminiTranslating by remember { mutableStateOf(false) }
+// ...
+isGeminiTranslating = true
+try { /* translate */ } finally {
+    isGeminiTranslating = false
+    // only then trigger TTS extraction
+}
+```
+
+Never extract TTS paragraphs before translation completes — it would feed untranslated text to the speech engine.
+
+### Rule 5: CRITICAL — Wtr-Lab Ad-Blocker Detection
+
+**Wtr-Lab.com actively detects ad-blockers by checking `window.speechSynthesis`.**
+
+The JS bridge (`window.WtrBridge` / `WtrWebAppInterface`) MUST never be disconnected, even during native TTS fallback. Removing the bridge triggers "Ad-Blocker Active" warnings that **block all content**.
+
+- `speakNative()`, `cancelNative()`, `pauseNative()`, `resumeNative()` all route through `WtrAudioControlBridge` callbacks.
+- The bridge is injected in the `AndroidView` factory with `addJavascriptInterface`.
+- When native TTS takes over from JS `speechSynthesis`, the bridge must remain connected so Wtr-Lab's detection script continues to see valid `window.speechSynthesis` bindings.
+
+### Rule 6: Tab-Scoped TTS Isolation
+
+Audio stream belongs exclusively to `WtrAudioControlBridge.activeTtsTabId`:
+
+```kotlin
+// WtrAudioControlBridge.kt
+private val _activeTtsTabId = MutableStateFlow<Long?>(null)
+val activeTtsTabId: StateFlow<Long?> = _activeTtsTabId
+```
+
+- Changing tabs MUST NOT disrupt background TTS on other tabs.
+- Each WebView gets its own `WtrWebAppInterface` with a unique `tabId`.
+- `playTrackInputList` and `webSpeakNativeFallbackList` are both capped at 300 items to prevent memory bloat.
+- Starting TTS on a new tab transfers ownership; previous tab's TTS is cleared.
+
+### Rule 7: Infinite Layout Chapter Scroll Alignment
+
+Auto-focus highlighting uses site-specific paragraph selectors from `WebsiteSupport` implementations. The JS extraction uses:
+
+```javascript
+element.scrollIntoView({block: "center", behavior: "smooth"})
+```
+
+Must handle both standard `<p>` tags and `.wtr-line-segment` spans (defined in `CommonSelectors.STANDARD_PARAGRAPH`):
+
+```kotlin
+// commons/Commons.kt
+const val STANDARD_PARAGRAPH = "p, .wtr-line-segment"
+```
+
+Sites like `webnovel.com` load chapters dynamically inside sequential visual containers — scraper must extract across multiple concurrent content containers and calculate viewport position (`rect.top - 100`).
+
+### Rule 8: Streaming JSON Backup Parser
+
+**MUST use `StreamingJsonParser` (pull parser). NEVER load full JSON into memory.**
+
+```kotlin
+// StreamingJsonParser.kt — uses android.util.JsonReader
+val reader = JsonReader(InputStreamReader(inputStream, "UTF-8"))
+reader.beginObject()
+while (reader.hasNext()) {
+    when (reader.nextName()) {
+        "settings" -> { /* parse type-safe key-values */ }
+        "history"   -> { reader.beginArray(); /* parse entries */ reader.endArray() }
+        // ...
+    }
+}
+```
+
+- Backup encryption: `AES/CBC/PKCS7Padding` via `AndroidKeyStore` (`BackupEncryption.kt`).
+- Import has a **30-second coroutine timeout**: `withTimeout(30000L) { StreamingJsonParser.parseBackupStream(...) }`.
+- Memory footprint stays under 10MB for any backup size.
+- Export uses streaming encrypt + buffered writer (no full-JSON in memory).
+- Import detects encrypted vs plain by peeking first non-whitespace byte (`{` = plain, else encrypted).
+
+### Rule 9: Google Translate CAPTCHA Anti-Looping
+
+Google Translate proxy can trigger CAPTCHA pages causing redirect loops during rapid chapter-flipping.
+
+Anti-loop guard in `BrowserAppScreen` (~line 202-258):
+
+```kotlin
+val translationAttempts = remember { mutableStateMapOf<String, Int>() }
+val lastTranslationTime = remember { mutableState(mutableMapOf<String, Long>()) }
+// Tracks attempts per cleaned URL — blocks after 2 attempts within 10 seconds
+```
+
+Configurable anti-CAPTCHA delay (default 4500ms):
+
+```kotlin
+var antiCaptchaDelay by remember { mutableStateOf(sharedPrefs.getBoolean("anti_captcha_delay", false)) }
+// When active: Handler.postDelayed(4500) before loading next translated chapter
+```
+
+### Rule 10: Local WebView Asset Caching (Wtr-Lab)
+
+Static assets for `wtr-lab.com` are intercepted in `shouldInterceptRequest` (~line 533):
+
+```kotlin
+override fun shouldInterceptRequest(view: WebView?, request: WebResourceRequest?): WebResourceResponse? {
+    val url = request?.url?.toString()
+    // For wtr-lab.com .js/.css/.woff/.png/.jpg/.jpeg/.svg:
+    val messageDigest = MessageDigest.getInstance("SHA-256")
+    val hashBytes = messageDigest.digest(url.toByteArray(Charsets.UTF_8))
+    val safeFileName = hashBytes.joinToString("") { "%02x".format(it) }
+    val cacheFolder = File(context.cacheDir, "wtr_static_cache")
+    // Cache hit → return local WebResourceResponse; miss → fall through to network
+}
+```
+
+### Rule 11: Gemini Translation Isolation
+
+Gemini translation ONLY triggers for novel chapter URLs — not new tab, not settings pages.
+
+Guard conditions in `BrowserAppScreen` (~line 274):
+
+```kotlin
+val isTranslateTarget = currentGeminiTranslateEnabled
+    && currentGeminiApiKey.isNotEmpty()
+    && isDomainMatchedForTranslation(urlVal)
+    && isNovelChapterUrl(urlVal)
+```
+
+- `isNovelChapterUrl()` checks `WebsiteSupportRegistry.findSupport(url) != null` OR URL contains `chapter`, `-ch-`, `/ch/`, `novelhubapp`, or `wtr-lab`.
+- When Gemini is active and the URL matches, `shouldTranslateUrl` returns `false` to **block** standard Google Translate proxy.
+- Uses `temperature = 0.3f` for consistent translations via `generationConfig`.
+- Model: `gemini-2.5-flash`.
+
+### Rule 12: CRITICAL — Background Execution via onPageFinished
+
+**Use `WebViewClient.onPageFinished` for ALL post-load operations (TTS extraction, translation, paragraph saving).**
+
+NEVER use Compose `LaunchedEffect` for background page operations — it fires too early (before DOM is ready) and **pauses when the app is backgrounded**, stalling auto-advance TTS and translation.
+
+```kotlin
+// BrowserAppScreen.kt line 1476-1478:
+// "Removed LaunchedEffect(...) and Gemini translation effects
+//  because they fail in the background when the Compose View is suspended.
+//  They are now manually triggered via pageLoadBackgroundLogic inside onPageFinished!"
+```
+
+`onPageFinished` is the ONLY reliable signal that DOM is ready. Launch coroutines via `viewModelScope.launch(Dispatchers.Main)` from inside the callback.
+
+### Rule 13: Dynamic Language-Switching TTS Stalls
+
+`WtrBrowserService.isPlaylistPrimarilyEnglish()` samples first 15 paragraphs to decide language:
+
+```kotlin
+// WtrBrowserService.kt line 361-378
+private fun isPlaylistPrimarilyEnglish(): Boolean {
+    val list = WtrAudioControlBridge.playTrackInputList.value
+    if (list.isEmpty()) return true
+    val sampleSize = minOf(list.size, 15)
+    // Counts ASCII letters (< 128) vs CJK (\u4e00..\u9fa5) / Cyrillic (\u0400..\u04FF)
+    return enCharCount >= foreignCharCount
+}
+```
+
+Prevents expensive 5-second TTS engine re-initialization on stray foreign lines in otherwise-English chapters.
+
+### Rule 14: Multi-Tab Navigation Isolation
+
+Each tab has independent back/forward navigation via `tabNavigationHistory` (MRU list in `BrowserViewModel`):
+
+```kotlin
+private val tabNavigationHistory = mutableListOf<Long>()
+
+fun recordTabVisit(tabId: Long) {
+    tabNavigationHistory.removeAll { it == tabId }
+    tabNavigationHistory.add(tabId) // MRU = most recent at end
+}
+
+fun handleBackNavigation(onFinish: () -> Unit) {
+    // Close current tab → switch to last visited tab via MRU
+    val lastTabId = tabNavigationHistory.lastOrNull()
+    val targetTab = tabs.find { it.id == lastTabId && it.id != current.id }
+    // Fallback: any remaining tab
+}
+```
+
+Tab switching uses local snapshot references (`val tabForView = activeTab!!`) inside the `AndroidView` update block to prevent the outgoing WebView from navigating to the incoming URL.
+
+---
+
+## 4. Complete Codebase Map
+
+### Root Layer (13 files)
+
+| File | Lines | Purpose & Key Types |
+|---|---|---|
+| `MainActivity.kt` | 117 | Entry point. `CrashReportManager.init()`, `WtrLogManager.initialize()`, starts `WtrBrowserService` as foreground service. Holds `activeWebViewsPool` (synchronized list). Contains `getProxyTranslatedUrl()`. |
+| `BrowserViewModel.kt` | 605 | Core ViewModel. Tab CRUD, history recording, bookmark toggle, URL cleaning/search resolution, backup export/import (streaming + encrypted), `handleBackNavigation()` with MRU, `tabNavigationHistory`, `userNavigateTrigger` SharedFlow. |
+| `WtrBrowserService.kt` | 900 | Foreground service. `MediaSession`, `WakeLock`, `WifiLock`, `TextToSpeech` engine. Notification with 1.5s throttle gate. `isPlaylistPrimarilyEnglish()`, `detectLanguageTag()`, paragraph queue management, `onStartCommand`/`onBind` lifecycle. |
+| `WtrAudioControlBridge.kt` | 224 | Singleton object. All TTS state: `isPlaying`, `title`, `subtitle`, `ttsSpeed`, `ttsPitch`, `activeTtsTabId`, `currentlyActiveTabId`, `playTrackInputList` (cap 300), `webSpeakNativeFallbackList` (cap 300), `isPlayerRunning`, `isAudiobookModeActive`. Callback routing between WebView ↔ notification/lockscreen. |
+| `WtrWebAppInterface.kt` | 63 | JS bridge class (one per tab). `@JavascriptInterface` methods: `syncUrl`, `syncMetadata`, `postPlaybackState`, `syncPollState`, `speakNative`, `cancelNative`, `pauseNative`, `resumeNative`. Tab-scoped via `tabId` constructor param. |
+| `WtrLogManager.kt` | 93 | Singleton. 100-entry ring buffer, SharedPreferences persistence, `loggerScope` on `Dispatchers.IO`, `"||LC||"` delimiter, user toggle `"enable_logs"`. |
+| `GeminiTranslator.kt` | 100 | Singleton. Calls `GenerativeModel("gemini-2.5-flash")` with `temperature = 0.3f`. Translates `List<String>` → JSON array with `id`/`text` → parses response. System instruction: light novel localization expert. |
+| `StreamingJsonParser.kt` | 237 | Pull parser using `android.util.JsonReader`. Parses backup stream: version, timestamp, settings (type-safe), history, bookmarks, tabs. Inner class `BackupData` data class. |
+| `BackupEncryption.kt` | 119 | `AES/CBC/PKCS7Padding` via `AndroidKeyStore`. `encryptBackup()`, `decryptBackup()`, `getEncryptingStream()`, `getDecryptingStream()` for streaming I/O. Keystore alias: `"wtr_backup_key"`. |
+| `CrashReportManager.kt` | 70 | Uncaught exception handler. Saves crash reports to `filesDir/crash_reports/`. Auto-clears reports older than 7 days. Attaches last 20 `WtrLogManager` entries. |
+| `PerformanceMonitor.kt` | 58 | Background coroutine. Monitors heap vs total RSS every 30s. GC trigger at >95%, warning log at >80%. `MemoryStats` data class. |
+| `NetworkErrorHandler.kt` | 30 | Generic retry wrapper with exponential backoff. `executeWithRetry(context, maxRetries=3, backoffMs=1000)`. Logs retries via `WtrLogManager`. |
+| `BrowserSection.kt` | 5 | Simple enum: `WEB`, `TABS`, `BOOKMARKS`, `HISTORY`, `SETTINGS`. |
+
+### Data Layer (6 files)
+
+| File | Lines | Purpose & Key Types |
+|---|---|---|
+| `AppDatabase.kt` | 30 | Room database v4. Entities: `HistoryEntry`, `BookmarkEntry`, `TabEntry`. Singleton pattern with `fallbackToDestructiveMigration()`. DB name: `"wtr_browser_db"`. |
+| `HistoryEntry.kt` | 19 | `@Entity(tableName="history")`. Fields: `id`, `url`, `title`, `timestamp`. Indices on `url` and `timestamp`. |
+| `BookmarkEntry.kt` | 29 | `@Entity(tableName="bookmarks")`. Fields: `id`, `url`, `title`, `timestamp`, `isNovel`, `novelTitle`, `chapterTitle`, `imageUrl`, `domain`, `lastViewedChapterUrl`, `lastViewedChapterTitle`. Indices on `url`, `domain`, `isNovel`. |
+| `TabEntry.kt` | 15 | `@Entity(tableName="tabs")`. Fields: `id`, `url`, `title`, `isCurrent`, `isDesktopMode`, `groupId`, `timestamp`. |
+| `BrowserDao.kt` | 82 | Room DAO. History CRUD + `pruneHistory(500)` + duplicate deletion. Bookmark CRUD + `getNovelBookmark()` + `isBookmarked()`. Tab CRUD. Returns `Flow` for reactive collection. |
+| `BrowserRepository.kt` | 228 | Repository wrapping DAO. URL normalization (strips `_x_tr_*`, `utm_*`, trailing `/`). Mutex-protected `insertHistory()` with deduplication. Novel metadata extraction via `WebsiteSupportRegistry.extractNovelAndChapter()`. `validateDatabaseIntegrity()`. |
+
+### Sites Layer (4 files)
+
+| File | Lines | Purpose & Key Types |
+|---|---|---|
+| `WebsiteSupport.kt` | 21 | Interface. Properties: `siteId`, `domains`, `keywords`, `requiresAutoTranslate`, `containerSelectors`, `paragraphSelector`, `excludeSelectors`, `requiresBrPreparation`, `siteSpecificJunkKeywords`, `adBlockKeywords`, `titleSuffixes`. |
+| `WebsiteSupportImpls.kt` | 185 | 11 concrete implementations: `WtrLabSupport`, `WebNovelSupport`, `NovelHallSupport`, `FanMtlSupport`, `NovelBinSupport`, `FreeWebNovelSupport`, `TimoTxtSupport`, `Novel543Support`, `TwkanSupport`, `NovelHubSupport`, `NovelHubAppSupport`. |
+| `WebsiteSupportRegistry.kt` | 202 | Singleton object. `findSupport(url)` with translate proxy URL cleaning (`--`/`.` decoding). `findSupportByKeyword()`. `extractNovelAndChapter()` with regex patterns for chapter/title splitting. `getAutoTranslateSites()`. |
+| `commons/Commons.kt` | 76 | `CommonSelectors.STANDARD_PARAGRAPH = "p, .wtr-line-segment"`. `COMMON_EXCLUDE` (42 CSS selectors for ads/nav/comments). `CommonJunkKeywords.GENERIC_PROMO`. `CommonPatterns.TITLE_PATTERNS` and `URL_PATTERNS` (Regex list for chapter detection). |
+
+### UI Layer (10 files)
+
+| File | Lines | Purpose & Key Types |
+|---|---|---|
+| `BrowserAppScreen.kt` | 3225 | Core composable. WebView factory/update, `WebViewClient`/`WebChromeClient`, `onPageFinished` dispatches all post-load logic. Search bar, bottom audio shelf, tab switching, desktop mode toggle, settings navigation. `shouldInterceptRequest` for ad-blocking + Wtr-Lab static cache. `isSameBaseOrTranslatedUrl()`. Anti-loop translation guards. Gemini translation injection. |
+| `SettingsPanel.kt` | 1128 | Settings overlay. TTS controls (speed, pitch, voice, accent), force-dark CSS, ad-blocker toggle, auto-translate domain list, Gemini API key, anti-CAPTCHA delay, diagnostic log viewer, backup export/import launchers via SAF. |
+| `TabsPanel.kt` | 456 | Tab management grid. Tab cards with title/URL preview, close button, active indicator. Tab grouping support via `groupId`. |
+| `BookmarksPanel.kt` | 364 | Bookmark list. Novel bookmarks with cover image, last-viewed chapter, domain badge. Delete/swipe-to-delete. Novel metadata card. |
+| `HistoryPanel.kt` | 155 | History list sorted by timestamp. Delete individual entries, clear all. URL/title display. |
+| `ChromeNewTabPage.kt` | 371 | Default new tab screen. Shortcut grid for supported sites, recent history rows, search input. |
+| `WebScripts.kt` | 466 | JS injection utilities. `injectForceDarkCss()`, `injectTranslateCssCleanup()`, TTS bridge script (`injectTtsBridgeScript`), paragraph extraction JS, scroll-into-view highlighting. |
+| `theme/Theme.kt` | 139 | Material 3 dynamic theme. Supports Dark/Light/System themes. Color scheme generation from `Color.kt`. |
+| `theme/Color.kt` | 11 | Color constants for light/dark palettes. |
+| `theme/Type.kt` | 36 | Typography definitions (Material 3 `Typography`). |
+
+**Total: 33 source files, ~10,500 lines of Kotlin.**
+
+---
+
+## 5. Supported Website Registry
+
+| Site | Domains | Auto-Translate | Special Notes |
+|---|---|---|---|
+| **Wtr-Lab** | `wtr-lab.com`, `wtr-lab.co` | No | Primary target. Deep JS bridge (`WtrBridge`). Ad-blocker detection via `window.speechSynthesis`. Static asset caching. |
+| **WebNovel** | `webnovel.com` | No | Dynamic container extraction (`.cha-content`, `.cha-words`). Infinite layout scrolling. Junk filter for `"webnovel"`. |
+| **NovelHall** | `novelhall.com`, `novelhall.net` | No | `#htmlContent` container. `requiresBrPreparation = true`. Ad-block keywords present. Multiple title suffixes. |
+| **FanMTL** | `fanmtl.com` | No | `.chapter-content`, `.read-content` containers. Junk filter for `"fanmtl"`. |
+| **NovelBin** | `novelbin.com`, `novelbin.net` | No | `#chr-content`, `.chr-c` containers. Standard extraction. |
+| **FreeWebNovel** | `freewebnovel.com` | No | `.txt`, `#htmlContent` containers. Simple extraction. |
+| **TimoTxt** | `timotxt.com`, `timotxt.cn` | **Yes** | Chinese site. `requiresBrPreparation = true`. Chinese junk keywords (`"本章未完"`, `"点击下一页"`, etc.). |
+| **Novel543** | `novel543.com` | **Yes** | `#content`, `.article-content`. `requiresBrPreparation = true`. |
+| **Twkan** | `twkan.com` | **Yes** | `#htmlContent`, `.article-content`. Standard extraction, no BR prep. |
+| **NovelHub** | `novelhub.net` | No | English-first. `#chr-content`, `.chapter-content`, `main article` selectors. |
+| **NovelHubApp** | `novelhubapp.com` | **Yes** | Single-page reader app. Dynamic navigation via client-side hash injection for chapter uniqueness. |
+
+Auto-translate sites (4): TimoTxt, Novel543, Twkan, NovelHubApp — routed through Google Translate proxy unless Gemini is active.
+
+---
+
+## 6. Common Pitfalls
+
+1. **Don't use `JSONObject` for backup parsing.** Always use `StreamingJsonParser` (pull parser). Loading full JSON into memory causes 150-200MB spikes and ANR crashes on low-RAM devices.
+
+2. **Don't remove `@JavascriptInterface` annotations.** ProGuard's `proguard-rules.pro` has `-keepclassmembers class com.example.WtrWebAppInterface { *; }` but annotations are the canonical contract. Removing them risks R8 stripping the methods.
+
+3. **Don't change the package from `com.example`.** ProGuard keep rules, `namespace` in `build.gradle.kts`, and room schema all reference `com.example`. Refactoring breaks release builds silently.
+
+4. **Don't use `data:` or `blob:` URLs in history.** Filtered out in `BrowserViewModel.onPageLoaded()` — they're internal browser artifacts, not navigable pages. Also filtered: URLs > 2048 chars.
+
+5. **Don't modify `WtrAudioControlBridge` StateFlow caps.** `playTrackInputList` and `webSpeakNativeFallbackList` are both capped at 300 items (`list.take(300)`). Raising this cap increases memory pressure during long audiobook sessions.
+
+6. **Don't use `LaunchedEffect` for page-load triggers.** Compose lifecycle pauses `LaunchedEffect` when the app goes to background, stalling TTS auto-advance and Gemini translation. Always dispatch from `onPageFinished`.
+
+7. **Don't disconnect the JS bridge on Wtr-Lab pages.** Wtr-Lab's anti-adblock system checks `window.speechSynthesis` availability. Removing the bridge triggers content blocks.
+
+8. **Don't skip `fallbackToDestructiveMigration()` in Room.** The database is at version 4. Without destructive migration fallback, schema changes will crash on upgrade.
+
+---
+
+## 7. Documentation Index
+
+For deep architectural details, refer to the project docs:
+
+- `docs/ARCHITECTURE_OVERVIEW.md` — System topology, state flow synchronization rules
+- `docs/CORE_ENGINE.md` — Background services, bridges, ViewModel internals, telemetry
+- `docs/UI_LAYER.md` — Compose layouts, views, settings overlays, JS scrapers
+- `docs/DATA_LAYER.md` — Room schema, DAO queries, repository patterns, Regex heuristics
+- `docs/fixes.md` — Complete debugging history, memory limiters, anti-CAPTCHA implementations
+- `docs/ADDING_WEBSITES.md` — Guide for adding new site scraper implementations

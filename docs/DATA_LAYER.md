@@ -1,206 +1,579 @@
-# Wtr-Lab Data Persistence Layer Manual
+# Data Layer Reference — Novel Reader Android App
 
-## Room Database Schema, SQLite Indexes, and Title Parser Engine
-
-This document outlines the SQLite schema, entity mappings, custom repository patterns, and string-parsing heuristics governing data storage across Wtr-Lab Novel Reader.
-
----
-
-## 🏛️ Comprehensive Database Architecture & Classes
-
-The data layer is built on **Jetpack Room**, which abstracts standard SQLite transactions using annotations, providing compile-time query validation and reactive flows (`Flow`).
-
-### 1. Database Holder: `AppDatabase.kt`
-
-The abstract boundary declaring the operational database and database connections.
-
-- **Component Type**: `abstract class AppDatabase : RoomDatabase()`
-- **Primary Scope**: Defines the SQLite file mapping, configuration schemas, and Dao access points. Matches `version = 4` with persistent single/composite table speed indexes.
-- **Key Attributes & Inner Components**:
-  - `INSTANCE`: Volatile thread-safe caching variable protecting dual-initialization.
-  - `getDatabase(context)`: Standard synchronized thread-safe Singleton constructor. Invokes `Room.databaseBuilder(..., "wtr_browser_db")`.
-  - `.fallbackToDestructiveMigration()`: Prevents schema version mismatch crashes by clearing old SQLite local caches in development mode.
+> Complete persistence, caching, and backup subsystem documentation.
+> Covers Room database schema, DAO queries, repository business logic,
+> streaming backup/restore, and inter-component data flow.
 
 ---
 
-## 🗄️ Database Schemas & Entities
+## Table of Contents
 
-The application manages three distinct tables within local storage. Below are the precise Kotlin property definitions, column constraints, and roles.
-
-### 1. TabEntry (`tabs` Table)
-
-Holds browser tab states, tab groups, and historical session markers to rebuild active browser states.
-
-- **Property Schema**:
-  - `id`: `Long` (Primary Key, auto-generated). Unique identifier.
-  - `url`: `String`. The current web URL address loaded by this tab. Defaults to `chrome://newtab` for fresh instances.
-  - `title`: `String`. The active webpage title string drawn in the URL tab picker.
-  - `isCurrent`: `Boolean`. Flag marking if this tab is currently selected and visible in the WebKit viewport.
-  - `isDesktopMode`: `Boolean`. Flag enabling Desktop User-Agent overrides specifically on this WebKit instance.
-  - `groupId`: `Long?` (Nullable). Points to a custom index Folder for tab grouping drawers. Set to `null` if standalone.
-  - `timestamp`: `Long`. Sorting index ensuring tab listings preserve chronological creation.
-
-### 2. HistoryEntry (`history` Table)
-
-Stores visited web pages to build the Quick Speed-Dial cards and recent navigation rows.
-
-- **Database Indexes**:
-  - `idx_history_url`: Index on `url`. Optimizes history presence query checks.
-  - `idx_history_timestamp`: Index on `timestamp`. Accelerates chronological listing fetches.
-- **Property Schema**:
-  - `id`: `Long` (Primary Key, auto-generated). Unique historical index.
-  - `url`: `String`. Visited webpage URL.
-  - `title`: `String`. Webpage title (or novel chapter title parsed from DOM).
-  - `timestamp`: `Long`. Chronological timestamp of the visit.
-
-### 3. BookmarkEntry (`bookmarks` Table)
-
-Permits the saving of novel chapters, websites, and custom web links.
-
-- **Database Indexes**:
-  - `idx_bookmark_url`: Index on `url`. High speed bookmark checker queries.
-  - `idx_bookmark_domain`: Index on `domain`. Dominant filter lists optimizations.
-  - `idx_bookmark_isnovel`: Index on `isNovel`. Bookshelf library visual queries optimizer.
-- **Property Schema**:
-  - `id`: `Long` (Primary Key, auto-generated). Unique bookmark index.
-  - `url`: `String`. Saved page address.
-  - `title`: `String`. Webpage title.
-  - `timestamp`: `Long`. Date of bookmark creation.
-  - `isNovel`: `Boolean`. Smart flag marking if this bookmark matches a recognized reading website (e.g. timotxt, novelhall, webnovel) or has chapter titles. Opens in the visual **Novels Bookshelf Grid** if `true`; otherwise open under the general **Websites** tab.
-  - `novelTitle`: `String?` (Nullable). Extracted index title of the parent web novel (e.g. _Lord of the Mysteries_).
-  - `chapterTitle`: `String?` (Nullable). The specific chapter subtitle (e.g. _Chapter 123_).
-  - `imageUrl`: `String?` (Nullable). Direct cover image URL extracted from the page's HTML meta headers or image scopes.
-  - `domain`: `String?` (Nullable). Host domain name (e.g. `wtr-lab.com`) for host-associated search updates.
-  - `lastViewedChapterUrl`: `String?` (Nullable). Address pointing to the user's most recently viewed chapter, providing seamless resume capabilities.
-  - `lastViewedChapterTitle`: `String?` (Nullable). Subtitle of the last viewed chapter.
+1. [AppDatabase.kt — Room Configuration](#1-appdatabasetkt--room-configuration)
+2. [Entity Schemas](#2-entity-schemas)
+3. [BrowserDao.kt — Complete Query Reference](#3-browserdaokt--complete-query-reference)
+4. [BrowserRepository.kt — Business Logic Layer](#4-browserrepositorykt--business-logic-layer)
+5. [Backup JSON Format (Version 2)](#5-backup-json-format-version-2)
+6. [BackupEncryption.kt — AES Streaming](#6-backupencryptionkt--aes-streaming)
+7. [StreamingJsonParser.kt — Incremental Import](#7-streamingjsonparserkt--incremental-import)
+8. [WtrAudioControlBridge.kt — TTS State Store](#8-wtraudiocontrolbridgekt--tts-state-store)
+9. [SharedPreferences Schema](#9-sharedpreferences-schema)
+10. [Data Flow Diagram](#10-data-flow-diagram)
 
 ---
 
-## 🛰️ Room Data Access Object: `BrowserDao.kt`
+## 1. AppDatabase.kt — Room Configuration
 
-The central Interface defining SQL mappings. Queries are written directly on functions, providing asynchronous execution.
-
-- **Interface Type**: `interface BrowserDao`
-- **Exposed SQL Implementations**:
-  - `getAllHistory()`: `SELECT * FROM history ORDER BY timestamp DESC` returning reactive `Flow<List<HistoryEntry>>` streams.
-  - `getHistoryByUrl(url)`: `SELECT * FROM history WHERE url = :url LIMIT 1` (suspended query).
-  - `pruneHistory(limit)`: `DELETE FROM history WHERE id NOT IN (SELECT id FROM history ORDER BY timestamp DESC LIMIT :limit)` (restricts database ballooning).
-  - `insertHistory(entry)`: Suspended SQLite Insertion on conflict replacement.
-  - `deleteHistory(id)`: Removes history items.
-  - `clearHistory()`: Complete table wipe.
-  - `getAllBookmarks()`: `SELECT * FROM bookmarks ORDER BY timestamp DESC` returning a `Flow`.
-  - `insertBookmark(entry)` / `updateBookmark(entry)`: Basic database writers.
-  - `getNovelBookmark(novelTitle)`: Retrieves a bookmarked novel by exact string name.
-  - `getAllNovelBookmarks()`: Retrieves all bookmarks flagged as novels (`isNovel = 1`).
-  - `deleteBookmark(id)` / `deleteBookmarkByUrl(url)`: Removes bookmarks.
-  - `clearBookmarks()`: Wipes bookmarks.
-  - `isBookmarked(url)`: `SELECT EXISTS(SELECT 1 FROM bookmarks WHERE url = :url LIMIT 1)` returning `Flow<Boolean>`.
-  - `getAllTabsFlow()`: Emits active browser tab array lists.
-  - `getAllTabs()`: Retrieves the static flat list of tabs for JSON backups.
-  - `insertTab(tab)` / `updateTab(tab)` / `deleteTab(id)` / `clearTabs()`: Tab manipulation APIs.
-
----
-
-## 🏛️ The Repository Pattern (`BrowserRepository.kt`)
-
-`BrowserRepository` coordinates actions between the UI view layer and the background database handlers, executing disk I/O operations asynchronously off the Main UI thread.
-
-### 1. Coordinate and Execution Methods
-
-- `insertHistory(url, title)`: Saves a history row. Automatically calls `pruneHistory(500)` to maintain lightweight database size.
-- `insertBookmark(url, title, imageUrl)`: Evaluates if the URL host matches novel signatures. Auto-extracts metadata and saves the bookmark with `isNovel = true` if recognized.
-- `updateNovelMetadata(url, novelTitle, chapterTitle, coverImage)`: Updates active bookmark titles, covers, and last chapter indicators during active browsing.
-- `updateReadingProgress(url, title)`: Automatically updates the user's reading bookmark progress. Tracks the user's active chapter URL and title so they can resume reading from the library.
-- `validateDatabaseIntegrity(context)`: Suspended check that scans history, bookmarks, and tabs records to ensure all active fields contain non-empty paths and schemas. Logs validation markers or errors through `WtrLogManager` telemetry with a proper context parameter.
-- `JSON Backup Streams (Streaming v2)`: Restores collections incrementally via a low-level pull utility `StreamingJsonParser.kt` using native `JsonReader` buffers under `Dispatchers.IO`, keeping memory allocations under 10MB during large imports. Runs with a strict 30-second coroutine timeout.
-
----
-
-## 🔍 The Advanced `extractNovelAndChapter` Pattern Matches
-
-To support correct chapters and novel indicators inside notification bars, standard string parsing falls short. `BrowserRepository.kt` implements a deep **Regex Heuristic Engine** (`extractNovelAndChapter`) to parse titles.
-
-### Heuristic Execution Pipeline
-
-```
-         [Input Title & URL]
-                  |
-                  v
-       [Purge Website Suffixes]  (Strips tags like "novelhall", "timotxt")
-                  v
-   [Scan for English Chapter Regex]  ---> Found? ---> [Return parsed fields]
-                  |
-                Failed
-                  v
-   [Scan for Chinese Chapter Regex]  ---> Found? ---> [Return parsed fields]
-                  |
-                Failed
-                  v
-   [Scan for Roman Numeral Regex]   ---> Found? ---> [Return parsed fields]
-                  |
-                Failed
-                  v
-[Parse Chapter information from URL Path] ---------> [Verify & return finalized tokens]
-```
-
-### RegEx Matching In-Memory Core (Kotlin Implementation)
-
-The RegEx matching parsing process strips hostnames, tags, and standard headers to split titles into exact Pairs representing a clean `Novel Title` and a well-formatted `Chapter Subtitle` (e.g. _Chapter 123_):
+**File:** `data/AppDatabase.kt` (31 lines)
 
 ```kotlin
-fun extractNovelAndChapter(title: String, url: String): Pair<String, String> {
-    // Stage 1: Clean junk prefixes and suffixes
-    var parsedTitle = title.trim()
-        .replace(Regex("(?i)_novelhall\\.com"), "")
-        .replace(Regex("(?i)_novelhall"), "")
-        .replace(Regex("(?i)_timotxt"), "")
-        .replace(Regex("(?i)_timotxt\\.com"), "")
-        .replace(Regex("(?i)_timotxt", RegexOption.IGNORE_CASE), "")
-        .replace(Regex("(?i)- Wtr-Lab(?i)"), "")
+@Database(
+    entities = [HistoryEntry::class, BookmarkEntry::class, TabEntry::class],
+    version = 4,
+    exportSchema = false
+)
+abstract class AppDatabase : RoomDatabase() {
+    abstract fun browserDao(): BrowserDao
 
-    // Stage 2: English Chapter Parsing (e.g., Chapter 123: The Beginning)
-    val englishChapterRegex = Regex("(?i)Chapter\\s*(\\d+|\\d+\\.\\d+)\\s*(?:-|:)?\\s*(.*)")
-    val engMatch = englishChapterRegex.find(parsedTitle)
-    if (engMatch != null) {
-        val chapterNum = engMatch.groupValues[1]
-        val chapterName = engMatch.groupValues[2].trim()
-        val novelPart = parsedTitle.substring(0, engMatch.range.first).trim()
-        val formattedChap = "Chapter $chapterNum" + (if (chapterName.isNotEmpty()) " - $chapterName" else "")
-        return Pair(if (novelPart.isNotEmpty()) novelPart else "Web Novel", formattedChap)
+    companion object {
+        @Volatile private var INSTANCE: AppDatabase? = null
+
+        fun getDatabase(context: Context): AppDatabase { ... }
     }
-
-    // Stage 3: Chinese Chapter Parsing (e.g., 第123章 章节名称)
-    val chineseChapterRegex = Regex("(第\\s*\\d+\\s*[章节卷]\\s*)(.*)")
-    val cnMatch = chineseChapterRegex.find(parsedTitle)
-    if (cnMatch != null) {
-        val chapterNum = cnMatch.groupValues[1].trim()
-        val chapterName = cnMatch.groupValues[2].trim()
-        val novelPart = parsedTitle.substring(0, cnMatch.range.first).trim()
-        val formattedChap = "$chapterNum" + (if (chapterName.isNotEmpty()) " - $chapterName" else "")
-        return Pair(if (novelPart.isNotEmpty()) novelPart else "Web Novel", formattedChap)
-    }
-
-    // Stage 4: Roman Numeral Chapters (e.g., Act II, Chapter III)
-    val romanChapterRegex = Regex("(?i)Chapter\\s+([IVXLCDMivxlcdm]+)\\s*(?:-|:)?\\s*(.*)")
-    val romanMatch = romanChapterRegex.find(parsedTitle)
-    if (romanMatch != null) {
-        val romanNum = romanMatch.groupValues[1].uppercase()
-        val chapterName = romanMatch.groupValues[2].trim()
-        val novelPart = parsedTitle.substring(0, romanMatch.range.first).trim()
-        val formattedChap = "Chapter $romanNum" + (if (chapterName.isNotEmpty()) " - $chapterName" else "")
-        return Pair(if (novelPart.isNotEmpty()) novelPart else "Web Novel", formattedChap)
-    }
-
-    // Stage 5: Fallback URL Path Parsing Heuristics
-    val pathRegex = Regex("/(?:chapter|read|novel)/(\\d+|[ivxlcdm\\d-]+)/?")
-    val pathMatch = pathRegex.find(url)
-    if (pathMatch != null) {
-        val rawChapterId = pathMatch.groupValues[1].replace("-", " ").capitalize()
-        return Pair(parsedTitle, "Chapter $rawChapterId")
-    }
-
-    return Pair("Web Novel", parsedTitle)
 }
 ```
 
-This multi-layered Regex mechanism has proven highly effective at ensuring correct title indicators inside systems structures across all supported domains.
+| Property | Value |
+|---|---|
+| Entities | `HistoryEntry`, `BookmarkEntry`, `TabEntry` |
+| Schema version | 4 |
+| Export schema | `false` |
+| Database name | `"wtr_browser_db"` |
+| Migration strategy | `fallbackToDestructiveMigration()` |
+| Singleton pattern | `@Volatile` + `synchronized` double-check locking |
+| DAO accessor | `abstract fun browserDao(): BrowserDao` |
+
+> **Note:** No incremental migrations exist. Any schema version change destroys and
+> recreates all tables. This is intentional — backup/restore handles data continuity.
+
+---
+
+## 2. Entity Schemas
+
+### 2.1 TabEntry — `tabs` Table
+
+**File:** `data/TabEntry.kt` (16 lines)
+
+```kotlin
+@Entity(tableName = "tabs")
+data class TabEntry(...)
+```
+
+| Column | Type | Default | Notes |
+|--------|------|---------|-------|
+| `id` | `Long` | `0` | `@PrimaryKey(autoGenerate = true)` |
+| `url` | `String` | — | `"chrome://newtab"` for new tabs |
+| `title` | `String` | — | Page title or `"New Tab"` |
+| `isCurrent` | `Boolean` | `false` | Exactly one tab has `isCurrent = true` |
+| `isDesktopMode` | `Boolean` | `false` | Per-tab User-Agent toggle |
+| `groupId` | `Long?` | `null` | Tab group ID; `null` = standalone |
+| `timestamp` | `Long` | `System.currentTimeMillis()` | Creation time |
+
+**Indices:** None defined.
+
+**Invariants:**
+- Exactly one row must have `isCurrent = true` at all times.
+- Closing the last tab resets it to `chrome://newtab` rather than deleting.
+- Tab IDs are auto-generated; used as keys in the `webViewsMap` in the UI layer.
+
+---
+
+### 2.2 HistoryEntry — `history` Table
+
+**File:** `data/HistoryEntry.kt` (20 lines)
+
+```kotlin
+@Entity(
+    tableName = "history",
+    indices = [
+        Index(value = ["url"], name = "idx_history_url"),
+        Index(value = ["timestamp"], name = "idx_history_timestamp")
+    ]
+)
+data class HistoryEntry(...)
+```
+
+| Column | Type | Default | Notes |
+|--------|------|---------|-------|
+| `id` | `Long` | `0` | `@PrimaryKey(autoGenerate = true)` |
+| `url` | `String` | — | Normalized URL (query params stripped) |
+| `title` | `String` | — | Best available title |
+| `timestamp` | `Long` | `System.currentTimeMillis()` | Last visit time (updated on dedup merge) |
+
+**Indices:**
+
+| Index Name | Column(s) | Purpose |
+|---|---|---|
+| `idx_history_url` | `url` | Fast dedup lookup |
+| `idx_history_timestamp` | `timestamp` | Chronological ordering + pruning |
+
+**Invariants:**
+- Auto-pruned to 500 entries via `pruneHistory(500)`.
+- Duplicate URLs are merged — best title wins, most recent timestamp kept.
+- Entries with empty URLs are flagged by `validateDatabaseIntegrity()`.
+
+---
+
+### 2.3 BookmarkEntry — `bookmarks` Table
+
+**File:** `data/BookmarkEntry.kt` (30 lines)
+
+```kotlin
+@Entity(
+    tableName = "bookmarks",
+    indices = [
+        Index(value = ["url"], name = "idx_bookmark_url"),
+        Index(value = ["domain"], name = "idx_bookmark_domain"),
+        Index(value = ["isNovel"], name = "idx_bookmark_isnovel")
+    ]
+)
+data class BookmarkEntry(...)
+```
+
+| Column | Type | Default | Notes |
+|--------|------|---------|-------|
+| `id` | `Long` | `0` | `@PrimaryKey(autoGenerate = true)` |
+| `url` | `String` | — | Original page URL at bookmark time |
+| `title` | `String` | — | Page title (may be updated to translated title) |
+| `timestamp` | `Long` | `System.currentTimeMillis()` | Bookmark creation time |
+| `isNovel` | `Boolean` | `false` | Novel bookmark vs standard website bookmark |
+| `novelTitle` | `String?` | `null` | Extracted novel name (from registry or title parsing) |
+| `chapterTitle` | `String?` | `null` | Chapter title at bookmark creation |
+| `imageUrl` | `String?` | `null` | Cover image URL (from `og:image` or JS extraction) |
+| `domain` | `String?` | `null` | Clean domain (stripped of `www.` and `translate.goog`) |
+| `lastViewedChapterUrl` | `String?` | `null` | Deep-link to the last read chapter |
+| `lastViewedChapterTitle` | `String?` | `null` | Title of the last read chapter |
+
+**Indices:**
+
+| Index Name | Column(s) | Purpose |
+|---|---|---|
+| `idx_bookmark_url` | `url` | Fast lookup for `isBookmarked()`, `deleteBookmarkByUrl()` |
+| `idx_bookmark_domain` | `domain` | Per-domain novel matching in `updateReadingProgress()` |
+| `idx_bookmark_isnovel` | `isNovel` | Fast filter for novel-only queries in BookmarksPanel |
+
+**Invariants:**
+- Novel bookmarks carry progressive reading state (`lastViewedChapterUrl`/`Title`).
+- `novelTitle` is used as the primary key for matching during reading progress updates.
+- The `isNovel` flag drives UI segmentation in `BookmarksPanel` (Websites vs Novels tabs).
+
+---
+
+## 3. BrowserDao.kt — Complete Query Reference
+
+**File:** `data/BrowserDao.kt` (83 lines)
+
+### 3.1 History Queries (8 methods)
+
+| # | Method | Annotation | SQL | Return | Notes |
+|---|--------|------------|-----|--------|-------|
+| 1 | `getAllHistory()` | `@Query` | `SELECT * FROM history ORDER BY timestamp DESC` | `Flow<List<HistoryEntry>>` | Reactive, collected by ViewModel |
+| 2 | `getAllHistoryList()` | `@Query`, `suspend` | `SELECT * FROM history ORDER BY timestamp DESC` | `List<HistoryEntry>` | One-shot for dedup logic |
+| 3 | `getHistoryByUrl(url)` | `@Query`, `suspend` | `SELECT * FROM history WHERE url = :url LIMIT 1` | `HistoryEntry?` | Single entry lookup |
+| 4 | `pruneHistory(limit)` | `@Query`, `suspend` | `DELETE FROM history WHERE id NOT IN (SELECT id FROM history ORDER BY timestamp DESC LIMIT :limit)` | `Unit` | Keeps newest N entries |
+| 5 | `insertHistory(entry)` | `@Insert(REPLACE)` | — | `Unit` | Upsert by primary key |
+| 6 | `deleteHistory(id)` | `@Query`, `suspend` | `DELETE FROM history WHERE id = :id` | `Unit` | Single entry delete |
+| 7 | `clearHistory()` | `@Query`, `suspend` | `DELETE FROM history` | `Unit` | Full table wipe |
+| 8 | `deleteHistoryDuplicates(url, keepId)` | `@Query`, `suspend` | `DELETE FROM history WHERE url = :url AND id != :keepId` | `Unit` | Dedup cleanup after merge |
+
+### 3.2 Bookmark Queries (9 methods)
+
+| # | Method | Annotation | SQL | Return | Notes |
+|---|--------|------------|-----|--------|-------|
+| 9 | `getAllBookmarks()` | `@Query` | `SELECT * FROM bookmarks ORDER BY timestamp DESC` | `Flow<List<BookmarkEntry>>` | Reactive |
+| 10 | `getAllBookmarksList()` | `@Query`, `suspend` | `SELECT * FROM bookmarks ORDER BY timestamp DESC` | `List<BookmarkEntry>` | One-shot |
+| 11 | `insertBookmark(entry)` | `@Insert(REPLACE)` | — | `Unit` | Upsert by PK |
+| 12 | `updateBookmark(entry)` | `@Update`, `suspend` | — | `Unit` | In-place update |
+| 13 | `getNovelBookmark(novelTitle)` | `@Query`, `suspend` | `SELECT * FROM bookmarks WHERE isNovel = 1 AND novelTitle = :novelTitle LIMIT 1` | `BookmarkEntry?` | Exact novel title match |
+| 14 | `getAllNovelBookmarks()` | `@Query`, `suspend` | `SELECT * FROM bookmarks WHERE isNovel = 1` | `List<BookmarkEntry>` | All novel bookmarks |
+| 15 | `deleteBookmark(id)` | `@Query`, `suspend` | `DELETE FROM bookmarks WHERE id = :id` | `Unit` | By PK |
+| 16 | `deleteBookmarkByUrl(url)` | `@Query`, `suspend` | `DELETE FROM bookmarks WHERE url = :url` | `Unit` | By URL |
+| 17 | `clearBookmarks()` | `@Query`, `suspend` | `DELETE FROM bookmarks` | `Unit` | Full wipe |
+| 18 | `isBookmarked(url)` | `@Query` | `SELECT EXISTS(SELECT 1 FROM bookmarks WHERE url = :url LIMIT 1)` | `Flow<Boolean>` | Reactive bookmark check |
+
+### 3.3 Tab Queries (6 methods)
+
+| # | Method | Annotation | SQL | Return | Notes |
+|---|--------|------------|-----|--------|-------|
+| 19 | `getAllTabsFlow()` | `@Query` | `SELECT * FROM tabs ORDER BY timestamp ASC` | `Flow<List<TabEntry>>` | Reactive, ASC by creation |
+| 20 | `getAllTabs()` | `@Query`, `suspend` | `SELECT * FROM tabs ORDER BY timestamp ASC` | `List<TabEntry>` | One-shot |
+| 21 | `insertTab(tab)` | `@Insert(REPLACE)` | — | `Long` | Returns generated row ID |
+| 22 | `updateTab(tab)` | `@Update`, `suspend` | — | `Unit` | In-place update |
+| 23 | `deleteTab(id)` | `@Query`, `suspend` | `DELETE FROM tabs WHERE id = :id` | `Unit` | By PK |
+| 24 | `clearTabs()` | `@Query`, `suspend` | `DELETE FROM tabs` | `Unit` | Full wipe |
+
+**Total: 24 DAO methods.**
+
+---
+
+## 4. BrowserRepository.kt — Business Logic Layer
+
+**File:** `data/BrowserRepository.kt` (229 lines)
+
+The repository wraps `BrowserDao` and adds domain-specific logic including URL
+normalization, history deduplication, novel bookmark detection, and reading
+progress tracking.
+
+### 4.1 URL Normalization (`normalizeUrl`)
+
+Strips tracking and UTM parameters before storage:
+
+```
+Removed parameters:
+  _x_tr_sl, _x_tr_tl, _x_tr_hl, _x_tr_pto, _x_tr_sch  (Google Translate)
+  utm_source, utm_medium, utm_campaign, utm_term, utm_content  (UTM tags)
+
+Post-processing: trailing slash removed.
+```
+
+**Host extraction (`getHost`):**
+- Lowercased, stripped of `.translate.goog`, `translate.goog`, and `www.` prefixes.
+
+### 4.2 History Deduplication (`insertHistory`)
+
+Protected by a `kotlinx.coroutines.sync.Mutex` to prevent concurrent write conflicts.
+
+**Matching strategy:**
+1. **Normalized URL match:** `normalizeUrl(entry.url) == normalizeUrl(inputUrl)`
+2. **Title + host match:** `entry.title == cleanTitle && getHost(entry.url) == inputHost` (requires title > 3 chars)
+
+**Merge logic on match:**
+- `bestTitle`: longer of existing vs. new title
+- `bestUrl`: shorter, HTTPS-preferred URL
+- Timestamp updated to `currentTimeMillis()`
+- Duplicates purged via `deleteHistoryDuplicates()` for both old and new URLs
+
+**Post-insert:** Auto-pruning to 500 entries via `pruneHistory(500)`.
+
+### 4.3 Novel Bookmark Detection (`insertBookmark`)
+
+Determines `isNovel` based on three heuristics:
+
+| Check | Condition |
+|-------|-----------|
+| **Host match** | `WebsiteSupportRegistry.findSupport(url) != null` OR host contains `translate.goog` |
+| **Title pattern** | Title contains `"Chapter"`, `"Ch."`, or `"Ch "` (case-insensitive) |
+| **Registry parse** | `extractNovelAndChapter()` returns a non-default chapter value |
+
+If `isNovel = true`, the bookmark is enriched with:
+- `novelTitle` / `chapterTitle` from `WebsiteSupportRegistry.extractNovelAndChapter()`
+- `domain` (cleaned host)
+- `imageUrl` (passed from caller)
+- `lastViewedChapterUrl` / `lastViewedChapterTitle` set to current page
+
+### 4.4 Reading Progress Tracking (`updateReadingProgress`)
+
+Three-tier matching strategy to find the correct novel bookmark:
+
+| Priority | Strategy | Logic |
+|----------|----------|-------|
+| 1 | **Exact title match** | `getNovelBookmark(novelTitle)` — direct SQL lookup |
+| 2 | **Domain + path prefix** | Same domain AND bookmark URL contains the first path segment of current URL |
+| 3 | **Fuzzy title (first 5 chars)** | Same domain AND current URL contains the first 5 characters of `bookmark.novelTitle` (handles translated titles) |
+
+**On match:** Updates `lastViewedChapterUrl` and `lastViewedChapterTitle`. Detects
+translated titles (longer than original, no Chinese characters) and updates both
+`title` and `novelTitle` to the translated version.
+
+### 4.5 Database Integrity Validation (`validateDatabaseIntegrity`)
+
+```kotlin
+suspend fun validateDatabaseIntegrity(context: Context?): Boolean
+```
+
+Checks all three tables for entries with empty `url` fields. Returns `false` if any
+malformed entry exists. Errors are logged via `WtrLogManager`.
+
+### 4.6 Backup Streaming (in BrowserViewModel)
+
+**Export:** Streams JSON to an `OutputStream` wrapped in `BackupEncryption.getEncryptingStream()`.
+Sequential writes: header → settings → history → bookmarks → tabs → closing brace.
+
+**Import:** Uses `StreamingJsonParser.parseBackupStream()` with a 30-second timeout.
+Detects encrypted vs. plain JSON by inspecting the first non-whitespace byte (`{` = plain).
+Restores all tables by clearing first, then bulk-inserting.
+
+### 4.7 Public API Surface
+
+| Method | Delegates To |
+|--------|-------------|
+| `allHistory`, `allBookmarks`, `allTabsFlow` | DAO `Flow` properties |
+| `insertHistory(url, title)` | Dedup + DAO insert |
+| `deleteHistory(id)`, `clearHistory()` | DAO passthrough |
+| `insertBookmark(url, title, imageUrl)` | Novel detection + DAO insert |
+| `updateNovelMetadata(url, ...)` | DAO update |
+| `updateReadingProgress(url, title)` | 3-tier match + DAO update |
+| `deleteBookmark(id)`, `deleteBookmarkByUrl(url)` | DAO passthrough |
+| `isBookmarked(url)` | DAO `Flow<Boolean>` |
+| `insertTab(tab)`, `updateTab(tab)`, `deleteTab(id)`, `clearTabs()` | DAO passthrough |
+| `validateDatabaseIntegrity()` | Cross-table validation |
+
+---
+
+## 5. Backup JSON Format (Version 2)
+
+```json
+{
+  "version": 2,
+  "timestamp": 1234567890,
+  "settings": {
+    "app_theme": "Dark",
+    "custom_text_zoom": 115,
+    "force_dark_content": false,
+    "enable_web_trackplayer": false,
+    "auto_focus_paragraphs": true,
+    "remember_paragraphs": true,
+    "auto_translate_enabled": true,
+    "auto_translate_domains": "wtr-lab.com, novel543.com, ...",
+    "gemini_translate_enabled": false,
+    "gemini_api_key": "",
+    "ad_blocker_enabled": true
+  },
+  "history": [
+    { "url": "https://...", "title": "...", "timestamp": 1234567890 }
+  ],
+  "bookmarks": [
+    {
+      "url": "https://...",
+      "title": "...",
+      "timestamp": 1234567890,
+      "isNovel": true,
+      "novelTitle": "My Novel",
+      "chapterTitle": "Chapter 42",
+      "imageUrl": "https://...cover.jpg",
+      "domain": "novel543.com",
+      "lastViewedChapterUrl": "https://.../chapter-42",
+      "lastViewedChapterTitle": "Chapter 42"
+    }
+  ],
+  "tabs": [
+    {
+      "url": "https://...",
+      "title": "...",
+      "isCurrent": true,
+      "isDesktopMode": false,
+      "groupId": null,
+      "timestamp": 1234567890
+    }
+  ]
+}
+```
+
+**Key design decisions:**
+- 11 SharedPreferences keys backed up (see section 9 for full list).
+- Nullable fields use JSON `null` (not omitted).
+- Tabs array includes `groupId` for tab group restoration.
+- Streaming write — no `org.json.JSONObject` root build; manual string concatenation.
+
+---
+
+## 6. BackupEncryption.kt — AES Streaming
+
+**File:** `BackupEncryption.kt` (120 lines)
+
+| Property | Value |
+|---|---|
+| KeyStore alias | `"wtr_backup_key"` |
+| Cipher | `AES/CBC/PKCS7Padding` |
+| Key storage | Android KeyStore (hardware-backed) |
+| Key spec | AES, CBC block mode, PKCS7 padding |
+| IV size | 16 bytes (random per encryption) |
+| Encoding | Base64 (DEFAULT flags, with line breaks) |
+
+**Streaming wrappers:**
+- `getEncryptingStream(outputStream)` → `Base64OutputStream` → writes IV → `CipherOutputStream`
+- `getDecryptingStream(inputStream)` → `Base64InputStream` → reads 16-byte IV → `CipherInputStream`
+
+**Graceful degradation:** If encryption stream init fails, export falls back to
+plaintext. Import detects encrypted files by checking if the first non-whitespace
+byte is NOT `{`, then attempts decryption.
+
+---
+
+## 7. StreamingJsonParser.kt — Incremental Import
+
+**File:** `StreamingJsonParser.kt` (238 lines)
+
+Uses `android.util.JsonReader` (pull parser) to avoid loading the entire backup
+into memory. This is critical for large bookmark collections.
+
+**Parse flow:**
+1. `beginObject()` — root `{`
+2. Read `version` (int) and `timestamp` (long)
+3. `settings` — iterates key-value pairs; infers type from `JsonToken` (BOOLEAN, NUMBER, STRING)
+4. `history` — delegates to `parseHistoryEntry()` per array element
+5. `bookmarks` — delegates to `parseBookmarkEntry()` (handles NULL for nullable fields)
+6. `tabs` — delegates to `parseTabEntry()` (handles NULL for `groupId`)
+
+**Timeout:** 30 seconds (enforced in `BrowserViewModel.importBackup`).
+
+---
+
+## 8. WtrAudioControlBridge.kt — TTS State Store
+
+**File:** `WtrAudioControlBridge.kt` (225 lines)
+
+Singleton `object` bridging WebView JavaScript ↔ Android TTS engine ↔ foreground
+service media controls. Uses `MutableStateFlow` for reactive state.
+
+| State Flow | Type | Purpose |
+|---|---|---|
+| `isPlaying` | `Boolean` | Media session playback state |
+| `title` | `String` | Current novel/chapter title |
+| `subtitle` | `String` | Paragraph progress or status text |
+| `novelName` / `chapterTitle` | `String` | Enriched metadata for lock screen |
+| `activeWebsite` | `String` | Clean domain for UI display |
+| `ttsSpeed` | `Float` | Speech rate multiplier (default 4.0) |
+| `ttsPitch` | `Float` | Voice pitch (default 1.0) |
+| `ttsVoiceName` | `String` | System TTS voice identifier |
+| `ttsAccent` | `String` | `"US"`, `"UK"`, `"AU"`, or `"IN"` |
+| `availableVoices` | `List<String>` | Enumerated system voices |
+| `playTrackInputList` | `List<String>` | Extracted paragraph text list |
+| `currentTrackIndex` | `Int` | Currently playing paragraph index |
+| `isPlayerRunning` | `Boolean` | Custom TrackPlayer active state |
+| `isAudiobookModeActive` | `Boolean` | Override `isPlaying` for audiobook UX |
+| `currentlySpeakingText` | `String` | Current TTS utterance text |
+| `extractedUrl` | `String` | URL of currently extracted page |
+| `activeTtsTabId` | `Long?` | Tab ID currently driving TTS |
+| `currentlyActiveTabId` | `Long?` | Tab ID currently visible to user |
+
+**Callback slots** (set by `BrowserAppScreen` and `WtrBrowserService`):
+
+| Callback | Direction | Purpose |
+|---|---|---|
+| `playAction` / `pauseAction` / `nextAction` / `prevAction` | Service → WebView | Media button JS injection |
+| `onSpeakNative` / `onCancelNative` / `onPauseNative` / `onResumeNative` | WebView → Service | TTS engine commands |
+| `onWebViewProgressTrigger` | Service → WebView | `WtrTtsTriggerEvent()` JS call |
+| `onMetadataExtracted` | WebView → App | Novel metadata for bookmark updates |
+| `onStateChangedCallback` | Bridge → Service | Notify media session update |
+| `playCustomParagraphAction` | UI → Service | Start TTS at specific paragraph |
+| `nextChapterAction` | Service → UI | Trigger next chapter navigation |
+
+---
+
+## 9. SharedPreferences Schema
+
+**File:** `"wtr_browser_settings"` (accessed via `context.getSharedPreferences`)
+
+| Key | Type | Default | Backed Up | Description |
+|-----|------|---------|-----------|-------------|
+| `app_theme` | `String` | `"Dark"` | Yes | Theme name (Dark/Grey/White/Sepia/Forest/Ocean) |
+| `custom_text_zoom` | `Int` | `115` | Yes | WebView text zoom percentage (95–160) |
+| `force_dark_content` | `Boolean` | `false` | Yes | Inject dark CSS into all pages |
+| `enable_web_trackplayer` | `Boolean` | `false` | Yes | Enable paragraph TrackPlayer extraction |
+| `auto_focus_paragraphs` | `Boolean` | `true` | Yes | JS highlight + scroll into view on paragraph change |
+| `remember_paragraphs` | `Boolean` | `true` | Yes | Save paragraph index per URL |
+| `auto_translate_enabled` | `Boolean` | `true` | Yes | Auto-redirect through Google Translate |
+| `auto_translate_domains` | `String` | Registry default | Yes | Comma-separated domain keywords |
+| `gemini_translate_enabled` | `Boolean` | `false` | Yes | Use Gemini AI instead of Google Translate |
+| `gemini_api_key` | `String` | `""` | Yes | Gemini API key |
+| `ad_blocker_enabled` | `Boolean` | `true` | Yes | Block ad network requests in WebView |
+| `anti_captcha_delay` | `Boolean` | `false` | No | Anti-CAPTCHA delay on page load |
+| `tts_speed` | `String` | `"4.0"` | No | TTS rate as string |
+| `tts_pitch` | `String` | `"1.0"` | No | TTS pitch preset |
+| `tts_accent` | `String` | `"US"` | No | Voice accent preference |
+| `search_engine` | `String` | Google URL | No | Search engine query URL |
+
+> **Note:** 11 keys are included in backups. Non-backed-up keys are restored to
+> defaults after an import.
+
+---
+
+## 10. Data Flow Diagram
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                         USER INTERACTION                             │
+│  ┌──────────┐  ┌──────────┐  ┌──────────────┐  ┌───────────────┐  │
+│  │  WebView  │  │  Back    │  │  Bookmark    │  │  Settings     │  │
+│  │  Navigation│ │  Button  │  │  Button      │  │  Panel        │  │
+│  └─────┬─────┘  └────┬─────┘  └──────┬───────┘  └──────┬────────┘  │
+└────────┼──────────────┼──────────────┼─────────────────┼───────────┘
+        │              │              │                 │
+        ▼              │              │                 │
+┌─────────┐            │              │                 │
+│ WebView │            │              │                 │
+│ Client  │            │              │                 │
+└───────┬─┘            │              │                 │
+        │              │              │                 │
+        ▼              ▼              ▼                 ▼
+┌───────────────────────────────────────────────────────────────────┐
+│                      BrowserViewModel                              │
+│  ┌─────────────┐  ┌──────────────┐  ┌────────────────────────┐  │
+│  │ onPageLoaded│  │ toggleBookmark│ │ exportBackup /          │  │
+│  │ loadUrl     │  │ closeTab      │ │ importBackup           │  │
+│  └──────┬──────┘  └──────┬───────┘  └───────────┬────────────┘  │
+└─────────┼────────────────┼───────────────────────┼───────────────┘
+          │                │                       │
+          ▼                ▼                       │
+┌─────────────────────────────────────────────────┼──────────────┐
+│                   BrowserRepository               │               │
+│  ┌──────────────────┐  ┌─────────────────────┐  │               │
+│  │ insertHistory    │  │ insertBookmark       │  │               │
+│  │ (dedup+normalize) │  │ (novel detection)    │  │               │
+│  │ updateReadingProg │  │ updateNovelMetadata  │  │               │
+│  └────────┬─────────┘  └──────────┬──────────┘  │               │
+└───────────┼────────────────────────┼─────────────┼───────────────┘
+            │                        │             │
+            ▼                        ▼             ▼
+┌───────────────────────────────────────────────────────────────────┐
+│                       BrowserDao (Room)                             │
+│  ┌────────────┐  ┌──────────────┐  ┌─────────────┐               │
+│  │ history    │  │ bookmarks    │  │ tabs        │               │
+│  │ table      │  │ table        │  │ table       │               │
+│  └─────┬──────┘  └──────┬───────┘  └──────┬──────┘               │
+└────────┼────────────────┼─────────────────┼──────────────────────┘
+        │                │                 │
+        ▼                ▼                 ▼
+┌───────────────────────────────────────────────────────────────────┐
+│                    SQLite (wtr_browser_db)                         │
+└───────────────────────────────────────────────────────────────────┘
+
+        ┌─────────────────────────────────────────┐
+        │  BACKUP / RESTORE PIPELINE              │
+        │                                         │
+        │  Export:                                │
+        │    Room → JSON Writer → AES Encrypt    │
+        │           → Base64 → SAF OutputStream   │
+        │                                         │
+        │  Import:                                │
+        │    SAF InputStream → Base64 decode      │
+        │      → detect { vs encrypted            │
+        │      → AES Decrypt (if needed)          │
+        │      → StreamingJsonParser (pull)       │
+        │      → Room bulk insert                 │
+        └─────────────────────────────────────────┘
+```
+
+**WebView → JavaScript Bridge flow:**
+
+```
+Website JS  ──evaluateJavascript──►  WtrWebAppInterface ("WtrBridge")
+     │                                     │
+     │  speakNative()                       ├──► WtrAudioControlBridge.onSpeakNative
+     │  cancelNative()                      ├──► WtrAudioControlBridge.onCancelNative
+     │  syncPollState()                     ├──► WtrAudioControlBridge.updatePlaybackState
+     │  syncUrl()                           ├──► BrowserViewModel.onPageLoaded
+     │  syncMetadata()                      └──► WtrAudioControlBridge.onMetadataExtracted
+     │                                           └──► BrowserViewModel.updateNovelMetadata
+     │                                               └──► BrowserRepository.updateNovelMetadata
+     │                                                   └──► BrowserDao.updateBookmark
+     ▼
+TTS Polyfill (WebScripts.kt)
+  └──► MockSpeechSynthesis → window.WtrBridge.speakNative()
+  └──► HTML5 Audio hooks → window.WtrBridge.postPlaybackState()
+  └──► Metadata polling (500ms) → window.WtrBridge.syncMetadata()
+```
+
+---
+
+*Generated from source analysis. All line counts and signatures match the codebase.*
