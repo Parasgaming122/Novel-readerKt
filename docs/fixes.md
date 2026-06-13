@@ -421,3 +421,35 @@ loggerScope.launch {
   exceptions via `Thread.setDefaultUncaughtExceptionHandler`. It serializes
   thread stacks alongside the current in-app debug buffers and saves crash
   logs to private local directories for later retrieval.
+
+---
+
+## Security & Data Protection
+
+### Issue 20: Plaintext Storage of Sensitive API Keys
+- **Severity:** High
+- **Files:** `SecurePreferences.kt`, `AndroidManifest.xml`
+- **Pre-fix state:** Crucial credentials such as the Google Gemini API Key were stored in plaintext shared preferences, vulnerable to local extraction on rooted devices or via standard adb backup mechanisms.
+- **Solution:** Implemented `SecurePreferences.kt` on top of Jetpack `EncryptedSharedPreferences` using AES-256 SIV/GCM, backed by AndroidKeyStore. Added a transparent first-launch migration layer which reads legacy unencrypted credentials, moves them to secure storage, and purges the plaintext copy. Hardened app sandbox by completely disabling system backups (`android:allowBackup="false"`).
+
+### Issue 21: Broad Network Traffic Exceptions and Eavesdropping Risks
+- **Severity:** High
+- **Files:** `network_security_config.xml`, `AndroidManifest.xml`
+- **Pre-fix state:** The app utilized an unrestricted `usesCleartextTraffic="true"` setting globally, allowing unencrypted transmissions even to secure service backends like Google APIs (Gemini, Translate proxy, etc.).
+- **Solution:** Added a strict custom `network_security_config.xml` mapping cleartext traffic exceptions. While standard HTTP cleartext is permitted broadly for web compatibility with legacy novel websites, cleartext traffic is strictly *blocked* and HTTPS is locked-in for all resources matching `google.com` and `googleapis.com`.
+
+---
+
+## Performance & Memory Management
+
+### Issue 22: Context Memory Leaks in Crash Handler
+- **Severity:** Medium
+- **Files:** `CrashReportManager.kt`
+- **Pre-fix state:** Retaining static `Context` references inside `CrashReportManager.kt` created an invisible memory leak across multiple MainActivity lifecycle creations and process restarts.
+- **Solution:** Migrated context references inside `CrashReportManager.kt` to utilize `java.lang.ref.WeakReference` ensuring they do not prevent garbage collection.
+
+### Issue 23: Performance Monitor Heap Calculation Inaccuracies
+- **Severity:** Low
+- **Files:** `PerformanceMonitor.kt`
+- **Pre-fix state:** The `PerformanceMonitor` evaluated JVM heap usage against total RSS parameters, giving highly skewed, inaccurate measurements.
+- **Solution:** Swapped calculation logic to read runtime memory limits via `Runtime.getRuntime().maxMemory()`, yielding precise, reliable percentage values for garbage collection signals.

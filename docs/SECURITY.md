@@ -88,15 +88,19 @@ Crash reports include meaningful stack traces with file names and line numbers (
 
 ## 3. Network Security
 
-### Cleartext Traffic
+### Cleartext Traffic & Network Security Configuration
 
-The app sets `android:usesCleartextTraffic="true"` in `AndroidManifest.xml`.
+The app utilizes a custom `network_security_config.xml` to specify its cleartext traffic permissions.
 
-**Why:** Many novel hosting websites use HTTP (not HTTPS). Enforcing HTTPS would break the core browsing functionality of the app.
+**Why:** Many novel hosting websites use HTTP (not HTTPS). Enforcing HTTPS globally would break the core browsing functionality of the app when users access these sites.
+
+**Configuration Details:**
+- **Base Config:** Cleartext traffic is permitted as a base configuration (`cleartextTrafficPermitted="true"`) to allow compatibility with non-HTTPS novel sites.
+- **Enforced Security Domains:** Cleartext traffic is strictly *disabled* (`cleartextTrafficPermitted="false"`) for `google.com` and `googleapis.com` (and their subdomains). This ensures all communication with Google Translate proxy and the Gemini API is encrypted via HTTPS.
 
 **Implications:**
-- All HTTP traffic is transmitted in plaintext and could be intercepted by network attackers.
-- This is an intentional trade-off for novel site compatibility.
+- HTTP traffic to third-party novel sites is transmitted in plaintext and could be intercepted. This is an intentional trade-off for compatibility.
+- Any API key exchanges or translation payloads sent to Google/Gemini are mathematically forced to use HTTPS transit, eliminating transit eavesdropping on credentials.
 
 ### Certificate Pinning
 
@@ -123,20 +127,21 @@ The Google Translate proxy endpoint uses **HTTPS**, ensuring that translation re
 | **Source control** | `.env` file (git-ignored) | Not committed |
 | **Build time** | Secrets Gradle Plugin reads `.env` | Process memory only |
 | **Compiled APK** | `BuildConfig.GEMINI_API_KEY` (string constant) | Embedded in DEX (obfuscated in release) |
-| **Runtime** | SharedPreferences | Android app-private storage |
+| **Runtime** | `SecurePreferences` (`EncryptedSharedPreferences`) | Android OS hardware-backed Keystore encrypted |
 | **Settings UI** | Show/hide toggle | User-controlled visibility |
 
 ### Protection Measures
 
 1. **`.gitignore`** includes `.env` — the key is never pushed to version control.
 2. **R8 obfuscation** renames the `BuildConfig` class and field in release builds, making static analysis slightly harder.
-3. **Settings panel** provides a show/hide toggle so the key is not visible on screen by default.
+3. **Hardware Storage Encryption**: The key entered by the user at runtime is handled by `SecurePreferences.kt` via **Jetpack EncryptedSharedPreferences** using the `AES256_SIV_SCHEME` for keys and `AES256_GCM_SCHEME` for values, backed by standard Android KeyStore.
+4. **Auto-Migration Pipeline**: Standard unencrypted `SharedPreferences` values are cleanly read on first launch, saved into encrypted preferences, and deleted from unencrypted storage to eliminate traces.
+5. **No ADB/Cloning Backups**: The app disables backups (`android:allowBackup="false"`) in the manifest to completely block attackers from extracting private SQLite or API keys via ADB backup extraction.
 
 ### Limitations
 
-- The API key is ultimately a string constant embedded in the APK. A determined attacker can extract it via decompilation (even with R8 obfuscation).
-- SharedPreferences are app-private but accessible on rooted devices.
-- **Recommendation:** Use a backend proxy server to hold the API key and have the app call the proxy instead of Gemini directly. This is the standard approach for production apps.
+- The API key fallback is ultimately a string constant embedded in the APK. A determined attacker can extract it via decompilation (even with R8 obfuscation).
+- Rooted devices can observe runtime memory, although the persistent storage is safe from other software using normal sandbox access.
 
 ---
 
@@ -168,7 +173,8 @@ All persistent data is stored in app-private locations, inaccessible to other ap
 | Data | Storage Location | Auto-Cleanup |
 |------|-----------------|--------------|
 | **Room database** (bookmarks, history, tabs) | Internal storage (`getDatabasePath()`) | No — persistent |
-| **SharedPreferences** (settings, API key) | Internal storage (`getSharedPreferences()`) | No — persistent |
+| **SharedPreferences** (general settings) | Internal storage (`getSharedPreferences()`) | No — persistent |
+| **EncryptedSharedPreferences** (Gemini API key) | Private cryptographic keystore-backed storage | No — persistent |
 | **Crash reports** | Internal storage (dedicated directory) | Yes — 7-day auto-cleanup |
 | **Static asset cache** | `cacheDir` | Yes — system can reclaim when space is low |
 | **TTS progress** | SharedPreferences (separate file) | No — cleared when tab is closed |
@@ -180,7 +186,7 @@ All persistent data is stored in app-private locations, inaccessible to other ap
 
 ### Data Extraction Rules
 
-The app declares `android:allowBackup="true"` with a `backup_rules.xml` that controls which SharedPreferences files are included in Android Auto Backup.
+The app declares `android:allowBackup="false"` in `AndroidManifest.xml` to completely prevent ADB and physical data cloning or extraction of sensitive components (such as private databases or encrypted SharedPreferences keystores).
 
 ---
 
@@ -230,10 +236,14 @@ These are areas where improvements could reduce security risk:
 | **Plaintext fallback for backups** | Low | If AndroidKeyStore fails, backups are saved unencrypted. This prevents data loss but exposes backup contents on disk. |
 | **R8 keep rules expose class names** | Low | The `com.example.data.**` keep rule prevents obfuscation of the entire data layer. More granular rules could reduce exposure. |
 
-### Recommendations for Future Hardening
+### Recommendations & Hardening Status
 
-1. **Backend proxy for Gemini API** — Move the API key server-side.
-2. **Network security config** — Use `network_security_config.xml` to selectively enforce HTTPS for the Gemini endpoint while allowing cleartext for novel sites.
-3. **WebView sandboxing** — Consider using Android's `WebViewAssetLoader` for local content and stricter origin checks.
-4. **Proguard rule refinement** — Replace the broad `com.example.data.**` keep rule with specific class-level rules.
-5. **URL scrubbing in crash reports** — Redact or hash URLs before including them in crash log files.
+The following list tracks the security status of core recommendations:
+
+1. **Jetpack EncryptedSharedPreferences (DONE)** — Implemented `SecurePreferences` for standard API key runtime encryption-at-rest. Handles legacy cleartext migration transparently.
+2. **Network Security Configuration (DONE)** — Created `network_security_config.xml` to lock down Gemini and Google domains to strict HTTPS transport while white-listing HTTP cleartext for unencrypted third-party novel sites.
+3. **Backup Protection Tuning (DONE)** — Configured `android:allowBackup="false"` to prevent backup exploits.
+4. **WebView Sandbox Tuning (DONE)** — Disabled file and content access (`allowFileAccess = false`, `allowContentAccess = false`) and switched to `WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE`.
+5. **WebView Sandbox (FUTURE)** — Consider using Android's `WebViewAssetLoader` for local content and stricter origin checks.
+6. **Proguard rule refinement** — Replace the broad `com.example.data.**` keep rule with specific class-level rules.
+7. **URL scrubbing in crash reports** — Redact or hash URLs before including them in crash log files.

@@ -41,6 +41,7 @@
 | **KSP** | 2.3.5 |
 | **ProGuard** | `proguard-android-optimize.txt` + custom `proguard-rules.pro` |
 | **Secrets** | Secrets Gradle Plugin 2.0.1 (`.env` / `.env.example`) |
+| **Security Crypto** | `androidx.security:security-crypto:1.1.0-alpha06` for storage encryption |
 | **Web Engine** | Android WebView (WebKit), `setJavaScriptEnabled = true` |
 
 ---
@@ -299,11 +300,20 @@ fun handleBackNavigation(onFinish: () -> Unit) {
 
 Tab switching uses local snapshot references (`val tabForView = activeTab!!`) inside the `AndroidView` update block to prevent the outgoing WebView from navigating to the incoming URL.
 
+### Rule 15: Secure Storage for Sensitive Credentials (API Keys)
+
+**Sensitive fields like `gemini_api_key` MUST store their values using `SecurePreferences` with hardware/keystore-backed `EncryptedSharedPreferences`.**
+
+- Legacy storage via standard unencrypted `SharedPreferences` is highly vulnerable and has been deprecated.
+- Uses `SecurePreferences.kt` which implements a thread-safe `EncryptedSharedPreferences` lookup using standard keystore alias `"wtr_secure_settings"` (`AES256_SIV` and `AES256_GCM`).
+- Implements an elegant fallback-on-failure using MODE_PRIVATE local SharedPreferences named `"wtr_secure_fallback_settings"`.
+- Performs an auto-migration upon first launch: reads the legacy unencrypted `gemini_api_key` under `"wtr_browser_settings"`, saves it to `SecurePreferences`, and removes the legacy unencrypted copy.
+
 ---
 
 ## 4. Complete Codebase Map
 
-### Root Layer (13 files)
+### Root Layer (14 files)
 
 | File | Lines | Purpose & Key Types |
 |---|---|---|
@@ -311,13 +321,14 @@ Tab switching uses local snapshot references (`val tabForView = activeTab!!`) in
 | `BrowserViewModel.kt` | 605 | Core ViewModel. Tab CRUD, history recording, bookmark toggle, URL cleaning/search resolution, backup export/import (streaming + encrypted), `handleBackNavigation()` with MRU, `tabNavigationHistory`, `userNavigateTrigger` SharedFlow. |
 | `WtrBrowserService.kt` | 900 | Foreground service. `MediaSession`, `WakeLock`, `WifiLock`, `TextToSpeech` engine. Notification with 1.5s throttle gate. `isPlaylistPrimarilyEnglish()`, `detectLanguageTag()`, paragraph queue management, `onStartCommand`/`onBind` lifecycle. |
 | `WtrAudioControlBridge.kt` | 224 | Singleton object. All TTS state: `isPlaying`, `title`, `subtitle`, `ttsSpeed`, `ttsPitch`, `activeTtsTabId`, `currentlyActiveTabId`, `playTrackInputList` (cap 300), `webSpeakNativeFallbackList` (cap 300), `isPlayerRunning`, `isAudiobookModeActive`. Callback routing between WebView ↔ notification/lockscreen. |
-| `WtrWebAppInterface.kt` | 63 | JS bridge class (one per tab). `@JavascriptInterface` methods: `syncUrl`, `syncMetadata`, `postPlaybackState`, `syncPollState`, `speakNative`, `cancelNative`, `pauseNative`, `resumeNative`. Tab-scoped via `tabId` constructor param. |
+| `WtrWebAppInterface.kt` | 80 | JS bridge class (one per tab). `@JavascriptInterface` methods: `syncUrl`, `syncMetadata`, `postPlaybackState`, `syncPollState`, `speakNative`, `cancelNative`, `pauseNative`, `resumeNative`. Clamps parameters/clipping safely for protection. |
+| `SecurePreferences.kt` | 50 | Utility object wrapper for `EncryptedSharedPreferences`. Handles keystore-based encryption for `gemini_api_key`, fallback MODE_PRIVATE support, and automatic secure migration from cleartext SharedPreferences. |
 | `WtrLogManager.kt` | 93 | Singleton. 100-entry ring buffer, SharedPreferences persistence, `loggerScope` on `Dispatchers.IO`, `"||LC||"` delimiter, user toggle `"enable_logs"`. |
-| `GeminiTranslator.kt` | 100 | Singleton. Calls `GenerativeModel("gemini-2.5-flash")` with `temperature = 0.3f`. Translates `List<String>` → JSON array with `id`/`text` → parses response. System instruction: light novel localization expert. |
+| `GeminiTranslator.kt` | 135 | Singleton. Generates model using cached instances. Applies high-fidelity literal-to-literary translation rules matching NoveLM and contextual localization specialized for Xianxia, Wuxia, Wuxia-specific vocabulary, large figures, other genres of novels. Uses JSON translation mapping. |
 | `StreamingJsonParser.kt` | 237 | Pull parser using `android.util.JsonReader`. Parses backup stream: version, timestamp, settings (type-safe), history, bookmarks, tabs. Inner class `BackupData` data class. |
 | `BackupEncryption.kt` | 119 | `AES/CBC/PKCS7Padding` via `AndroidKeyStore`. `encryptBackup()`, `decryptBackup()`, `getEncryptingStream()`, `getDecryptingStream()` for streaming I/O. Keystore alias: `"wtr_backup_key"`. |
-| `CrashReportManager.kt` | 70 | Uncaught exception handler. Saves crash reports to `filesDir/crash_reports/`. Auto-clears reports older than 7 days. Attaches last 20 `WtrLogManager` entries. |
-| `PerformanceMonitor.kt` | 58 | Background coroutine. Monitors heap vs total RSS every 30s. GC trigger at >95%, warning log at >80%. `MemoryStats` data class. |
+| `CrashReportManager.kt` | 75 | Uncaught exception handler. Saves crash reports utilizing WeakReference to avoid memory leaks. Auto-clears reports older than 7 days. Attaches last 20 logs. |
+| `PerformanceMonitor.kt` | 60 | Background coroutine. Monitors heap dynamically against limits every 30s. GC trigger at >95%, warning log at >80%. `MemoryStats` data class. |
 | `NetworkErrorHandler.kt` | 30 | Generic retry wrapper with exponential backoff. `executeWithRetry(context, maxRetries=3, backoffMs=1000)`. Logs retries via `WtrLogManager`. |
 | `BrowserSection.kt` | 5 | Simple enum: `WEB`, `TABS`, `BOOKMARKS`, `HISTORY`, `SETTINGS`. |
 

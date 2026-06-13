@@ -110,14 +110,15 @@ Automatic proxy-based translation for Chinese novel sites:
 - **Domain matching**: Automatically activates for supported Chinese/foreign novel domains (TimoTxt, Novel543, Twkan)
 - **Page integration**: Translated content is injected seamlessly into the reading view
 
-#### 6. Gemini AI Translation
-Contextual, high-quality novel translation powered by **Google Gemini 2.5 Flash**:
+#### 6. Gemini AI Translation (NoveLM Style)
+Contextual, high-fidelity literary novel translation powered by **Google Gemini 2.5 Flash**:
 
-- **Contextual understanding**: Unlike word-by-word translation, Gemini understands narrative context, character names, idioms, and cultural references
-- **JSON I/O pipeline**: Structured request/response format for reliable paragraph-level translation
-- **Smart activation**: Only activates for novel chapter URLs — catalog pages, search engines, and standard portals use free Google Translate
-- **Configurable**: Toggle on/off in settings; requires optional `GEMINI_API_KEY`
-- **TTS integration**: Translated paragraphs feed directly into the TTS speech engine for hands-free listening in your preferred language
+- **Literary-Level Localization (NoveLM Style)**: Uses an advanced literary translation pipeline that converts dry literal text to fluid, emotionally evocative prose. Specialized for Chinese webnovel genres (Xianxia, Wuxia, Xuanhuan, Danmei, LitRPG).
+- **Genre & Idiom Translation**: Translates complex Chinese idioms (Chengyu like 画蛇添足), titles, sects, and cultivation realms consistently (e.g. converting "Dou Qi", "Dantian", or "Nascent Soul" instead of raw transliterations).
+- **Bracket & Layout Preservation**: Maintains unique layout formatting features (such as bracket structures `【】` and `『』`) and accurately scales huge numeral figures (such as 万 and 亿) to Western notations.
+- **Secure Encrypted Storage**: The API key is stored with system hardware-backed encryption at rest via `EncryptedSharedPreferences` to maximize privacy.
+- **Smart Activation**: Translates only on novel chapter pages dynamically. Metadata pages, catalog pages, and search engines leverage standard Google Translate routing to conserve API limit space.
+- **TTS Integration**: Intercepts extracted translation nodes and feeds them directly to the native TextToSpeech speech synthesizer loop for seamless, hands-free listening.
 
 ### Browser & Navigation
 
@@ -152,7 +153,13 @@ Full app state backup with military-grade encryption:
 - **SAF integration**: Uses Storage Access Framework for user-controlled file picking
 - **Integrity validation**: `BrowserRepository.validateDatabaseIntegrity()` verifies restored data
 
-#### 11. Novel Bookmarks with Progress Tracking
+#### 11. Secure API Key Storage and Encryption-at-Rest
+Hardware-backed encryption-at-rest for sensitive user data:
+- **EncryptedSharedPreferences**: Sensitive fields like the optional user-provided Gemini API key are stored in hardware/keystore-backed `EncryptedSharedPreferences` rather than unencrypted cleartext XML files.
+- **Auto-Migration**: Secure preferences automatically scan, migrate, and erase any legacy cleartext XML configs on first boot.
+- **Anti-Extraction Hardening**: System-level cloud backups (`android:allowBackup="false"`) are completely disabled, heavily locking down the app sandbox from ADB physical extraction or data cloning attempts.
+
+#### 12. Novel Bookmarks with Progress Tracking
 Intelligent bookmarking for novel readers:
 - **Auto-detection**: Automatically identifies novel pages vs. standard web pages
 - **Progress tracking**: Saves reading position, last chapter visited, and timestamp
@@ -161,25 +168,25 @@ Intelligent bookmarking for novel readers:
 
 ### Diagnostics & Reliability
 
-#### 12. In-App Diagnostics
+#### 13. In-App Diagnostics
 Comprehensive diagnostic toolkit for troubleshooting:
 - **Log viewer**: In-app popup displaying a **100-entry ring buffer** of system actions, page loads, and audio events
 - **Crash reports**: Automatic crash log capture with **7-day retention** in private app storage
 - **Export**: Save diagnostic logs as `.txt` files via Storage Access Framework
 
-#### 13. Performance Monitoring
+#### 14. Performance Monitoring
 Real-time heap monitoring:
 - Background thread loop validates system RAM consumption
 - Triggers automatic `System.gc()` when heap reaches **95% utilization**
 - Prevents OOM (Out of Memory) crashes on memory-constrained devices
 
-#### 14. Network Retry with Exponential Backoff
+#### 15. Network Retry with Exponential Backoff
 Generic retry wrapper for resilient network operations:
 - Exponential backoff algorithm for transient failures
 - Configurable retry count and base delay
 - Applied to translation requests, page loads, and API calls
 
-#### 15. Anti-CAPTCHA Delay
+#### 16. Anti-CAPTCHA Delay
 Protection against automated translation blocking:
 - **4.5-second configurable delay** between translated page loads during TTS auto-advance
 - Prevents Google Translate from triggering CAPTCHA challenge screens
@@ -409,10 +416,11 @@ project-root/
 
 ## CI/CD
 
-Novel Reader uses **GitHub Actions** for automated builds:
+Novel Reader uses **GitHub Actions** for automated builds and manual deployments:
 
-**Workflow**: `.github/workflows/build-apk.yml`
+### 1. Automated Debug Builder
 
+- **Workflow File**: `.github/workflows/build-apk.yml`
 - **Trigger**: Push to `main` branch
 - **Build**: Compiles the debug APK using the latest Gradle and JDK 17
 - **Release**: Automatically creates a **GitHub Release** with SemVer patch increment
@@ -421,6 +429,14 @@ Novel Reader uses **GitHub Actions** for automated builds:
 ```
 Push to main → GitHub Actions → Gradle assembleDebug → SemVer bump → GitHub Release
 ```
+
+### 2. Manual Release Deployment Builder
+
+- **Workflow File**: `.github/workflows/build-release-apk.yml`
+- **Trigger**: Manual trigger only (`workflow_dispatch`); does not auto-run upon push. The user runs it manually.
+- **Keystore Signing**: Generates/utilizes a custom production release keystore signed with standard secrets values (`STORE_PASSWORD`, `KEY_PASSWORD`).
+- **Build**: Compiles the release-optimized obfuscated production APK using R8.
+- **Deployment**: Automatically increments SemVer version, crafts a custom production-ready tagged release, and uploads the `.apk` release production binary as an artifact.
 
 ---
 
