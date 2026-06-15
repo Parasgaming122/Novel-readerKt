@@ -7,11 +7,11 @@ plugins {
 }
 
 android {
-  namespace = "com.example"
+  namespace = "com.paras.novelreaderkt"
   compileSdk = 36
 
   defaultConfig {
-    applicationId = "com.paras.novelreader"
+    applicationId = "com.paras.novelreaderkt"
     minSdk = 24
     targetSdk = 36
     versionCode = 2

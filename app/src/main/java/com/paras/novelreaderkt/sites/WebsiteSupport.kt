@@ -1,4 +1,4 @@
-package com.example.sites
+package com.paras.novelreaderkt.sites
 
 interface WebsiteSupport {
     val siteId: String

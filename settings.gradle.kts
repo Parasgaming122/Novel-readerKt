@@ -16,6 +16,6 @@ dependencyResolutionManagement {
   }
 }
 
-rootProject.name = "My Application"
+rootProject.name = "NovelReaderV3"
 
 include(":app")

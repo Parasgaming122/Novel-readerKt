@@ -1,18 +1,18 @@
-package com.example.sites
+package com.paras.novelreaderkt.sites
 
 import android.net.Uri
-import com.example.sites.commons.CommonPatterns
-import com.example.sites.wtrlab.WtrLabSupport
-import com.example.sites.webnovel.WebNovelSupport
-import com.example.sites.novelhall.NovelHallSupport
-import com.example.sites.fanmtl.FanMtlSupport
-import com.example.sites.novelbin.NovelBinSupport
-import com.example.sites.freewebnovel.FreeWebNovelSupport
-import com.example.sites.timotxt.TimoTxtSupport
-import com.example.sites.novel543.Novel543Support
-import com.example.sites.twkan.TwkanSupport
-import com.example.sites.novelhub.NovelHubSupport
-import com.example.sites.novelhubapp.NovelHubAppSupport
+import com.paras.novelreaderkt.sites.commons.CommonPatterns
+import com.paras.novelreaderkt.sites.wtrlab.WtrLabSupport
+import com.paras.novelreaderkt.sites.webnovel.WebNovelSupport
+import com.paras.novelreaderkt.sites.novelhall.NovelHallSupport
+import com.paras.novelreaderkt.sites.fanmtl.FanMtlSupport
+import com.paras.novelreaderkt.sites.novelbin.NovelBinSupport
+import com.paras.novelreaderkt.sites.freewebnovel.FreeWebNovelSupport
+import com.paras.novelreaderkt.sites.timotxt.TimoTxtSupport
+import com.paras.novelreaderkt.sites.novel543.Novel543Support
+import com.paras.novelreaderkt.sites.twkan.TwkanSupport
+import com.paras.novelreaderkt.sites.novelhub.NovelHubSupport
+import com.paras.novelreaderkt.sites.novelhubapp.NovelHubAppSupport
 
 /**
  * Central registry that maps domains and keywords to WebsiteSupport implementations.
