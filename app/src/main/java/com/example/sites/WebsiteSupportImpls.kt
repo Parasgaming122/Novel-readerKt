@@ -136,22 +136,6 @@ class Novel543Support : WebsiteSupport {
     override val titleSuffixes = listOf(" - novel543", "_novel543.com", " - novel543.com")
 }
 
-class TwkanSupport : WebsiteSupport {
-    override val siteId = "twkan"
-    override val domains = listOf("twkan.com")
-    override val keywords = listOf("twkan")
-    override val requiresAutoTranslate = true
-
-    override val containerSelectors = listOf("#htmlContent", "#content", ".active", ".read-content", ".article-content")
-    override val paragraphSelector = CommonSelectors.STANDARD_PARAGRAPH
-    override val excludeSelectors = CommonSelectors.COMMON_EXCLUDE
-    override val requiresBrPreparation = false
-
-    override val siteSpecificJunkKeywords = listOf("twkan")
-    override val adBlockKeywords = emptyList<String>()
-    override val titleSuffixes = listOf(" - twkan", "_twkan.com", " - twkan.com")
-}
-
 class NovelHubSupport : WebsiteSupport {
     override val siteId = "novelhub"
     override val domains = listOf("novelhub.net")

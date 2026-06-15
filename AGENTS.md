@@ -383,7 +383,7 @@ Tab switching uses local snapshot references (`val tabForView = activeTab!!`) in
 | **FreeWebNovel** | `freewebnovel.com` | No | `.txt`, `#htmlContent` containers. Simple extraction. |
 | **TimoTxt** | `timotxt.com`, `timotxt.cn` | **Yes** | Chinese site. `requiresBrPreparation = true`. Chinese junk keywords (`"本章未完"`, `"点击下一页"`, etc.). |
 | **Novel543** | `novel543.com` | **Yes** | `#content`, `.article-content`. `requiresBrPreparation = true`. |
-| **Twkan** | `twkan.com` | **Yes** | `#htmlContent`, `.article-content`. Standard extraction, no BR prep. |
+| **Twkan** | `twkan.com` | **Yes** | `#htmlContent`, `.article-content`. `requiresBrPreparation = true` for BR-separated paragraph lines. |
 | **NovelHub** | `novelhub.net` | No | English-first. `#chr-content`, `.chapter-content`, `main article` selectors. |
 | **NovelHubApp** | `novelhubapp.com` | **Yes** | Single-page reader app. Dynamic navigation via client-side hash injection for chapter uniqueness. |
 

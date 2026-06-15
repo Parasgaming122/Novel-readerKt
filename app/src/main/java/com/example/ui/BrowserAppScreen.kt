@@ -259,18 +259,129 @@ fun BrowserAppScreen(onThemeChanged: (String) -> Unit = {}) {
                 if (isTranslateTarget) {
                     isGeminiTranslating = true
                     try {
+                        val support = com.example.sites.WebsiteSupportRegistry.findSupport(urlVal)
+                        val containerSelectorStr = if (support != null) {
+                            support.containerSelectors.joinToString(", ")
+                        } else {
+                            ""
+                        }
+                        val pSel = support?.paragraphSelector ?: "p, .wtr-line-segment"
+                        val excludeClasses = (support?.excludeSelectors ?: emptyList()).ifEmpty { 
+                            com.example.sites.commons.CommonSelectors.COMMON_EXCLUDE 
+                        }
+                        val excludeClassesStr = excludeClasses.joinToString(", ")
+                        val requiresBrPrepVal = if (support?.requiresBrPreparation == true) "true" else "false"
+
                         val extractionJs = """
                             (function() {
                                 let paragraphs = [];
-                                let pTags = document.querySelectorAll('p');
-                                if (pTags.length === 0) pTags = document.querySelectorAll('div, span');
+                                
                                 function isJunk(text) {
                                     let t = text.toLowerCase().trim();
                                     if (t.length < 5) return true;
                                     const promoKeywords = ["join our discord", "join discord", "patreon", "support me", "support the author", "rate this", "please review", "please rate", "author's note", "author note", "recommend", "translator", "translation", "editor's note", "editor note"];
                                     return promoKeywords.some(keyword => t.includes(keyword));
                                 }
+                                
+                                let containers = [];
+                                const containerSelector = "${containerSelectorStr.replace("\"", "\\\"")}";
+                                if (containerSelector) {
+                                    let rawContainers = Array.from(document.querySelectorAll(containerSelector));
+                                    containers = rawContainers.filter(c => !rawContainers.some(other => other !== c && other.contains(c)));
+                                }
+                                
+                                function prepareBrParagraphs(contentEl) {
+                                    if (!contentEl) return;
+                                    if (contentEl.querySelector('.wtr-line-segment') || contentEl.querySelector('.wtr-focus-highlight')) return;
+                                    
+                                    const isTwkan = window.location.hostname.includes("twkan") || window.location.hostname.includes("ttkan") || window.location.href.includes("twkan") || window.location.href.includes("ttkan");
+                                    if (isTwkan) {
+                                        contentEl.querySelectorAll("div.txtad, div.txtcenter, div.ad, script, noscript, iframe, ins, .ad-placement, #ad-container").forEach(el => el.remove());
+                                        let paragraphs = [];
+                                        let currentPart = [];
+                                        
+                                        function flushPart() {
+                                            if (currentPart.length > 0) {
+                                                let joined = currentPart.join(" ").trim();
+                                                joined = joined.replace(/^[\u2003\u3000\t ]+/g, "").trim();
+                                                if (joined.length > 5) {
+                                                    paragraphs.push(joined);
+                                                }
+                                                currentPart = [];
+                                            }
+                                        }
+                                        
+                                        let children = Array.from(contentEl.childNodes);
+                                        children.forEach(node => {
+                                            if (node.nodeType === 3) {
+                                                let txt = node.textContent.trim();
+                                                if (txt) currentPart.push(txt);
+                                            } else if (node.nodeType === 1) {
+                                                let tagName = node.tagName.toLowerCase();
+                                                if (tagName === 'br') {
+                                                    flushPart();
+                                                } else if (tagName === 'font' || tagName === 'span' || tagName === 'b' || tagName === 'i' || tagName === 'strong' || tagName === 'em') {
+                                                    let txt = node.innerText || node.textContent;
+                                                    txt = txt.trim();
+                                                    if (txt) currentPart.push(txt);
+                                                } else {
+                                                    flushPart();
+                                                    let txt = node.innerText || node.textContent;
+                                                    txt = txt.trim();
+                                                    if (txt.length > 5) {
+                                                        paragraphs.push(txt);
+                                                    }
+                                                }
+                                            }
+                                        });
+                                        flushPart();
+                                        
+                                        let newHtml = "";
+                                        paragraphs.forEach(pText => {
+                                            newHtml += '<span class="wtr-line-segment">' + pText + '</span><br><br>';
+                                        });
+                                        contentEl.innerHTML = newHtml;
+                                        return;
+                                    }
+                                    
+                                    let pTags = contentEl.querySelectorAll('p');
+                                    if (pTags.length > 5) return; 
+                                    
+                                    let html = contentEl.innerHTML;
+                                    let parts = html.split(/<br\s*\/?>/i);
+                                    let newParts = parts.map(part => {
+                                        let trimmed = part.replace(/<[^>]+>/g, '').trim();
+                                        if (trimmed.length > 5) {
+                                            if (!part.trim().startsWith('<span class="wtr-line-segment"')) {
+                                                return '<span class="wtr-line-segment">' + part + '</span>';
+                                            }
+                                        }
+                                        return part;
+                                    });
+                                    contentEl.innerHTML = newParts.join('<br>');
+                                }
+                                
+                                if ($requiresBrPrepVal == "true" || $requiresBrPrepVal == true) {
+                                    containers.forEach(c => prepareBrParagraphs(c));
+                                }
+                                
+                                let pTags = [];
+                                if (containers.length > 0) {
+                                    containers.forEach(contentEl => {
+                                        let rawPTags = Array.from(contentEl.querySelectorAll("${pSel.replace("\"", "\\\"")}"));
+                                        let filtered = rawPTags.filter(p => !rawPTags.some(parent => parent !== p && parent.contains(p)));
+                                        pTags.push(...filtered);
+                                    });
+                                } else {
+                                    pTags = Array.from(document.querySelectorAll('p'));
+                                    if (pTags.length === 0) {
+                                        pTags = Array.from(document.querySelectorAll('div, span'));
+                                    }
+                                }
+                                
+                                const excludeClass = "${excludeClassesStr.replace("\"", "\\\"")}";
                                 pTags.forEach(p => {
+                                    if (excludeClass && p.closest(excludeClass)) return;
                                     let text = p.innerText.trim();
                                     if (text.length > 5 && !isJunk(text)) {
                                         p.setAttribute('wtr-translation-id', paragraphs.length);
@@ -533,7 +644,10 @@ fun BrowserAppScreen(onThemeChanged: (String) -> Unit = {}) {
                                 val adKeywords = listOf(
                                     "googlesyndication.com", "googleads", "doubleclick.net", "adservice.google",
                                     "adsystem", "popunder", "popads", "onclickads", "taboola", "outbrain",
-                                    "mgid.com", "scorecardresearch", "analytics.google"
+                                    "mgid.com", "scorecardresearch", "analytics.google", "googletagmanager.com",
+                                    "google-analytics.com", "cnzz.com", "51.la", "umeng.com", "umeng.co",
+                                    "hm.baidu.com", "pos.baidu.com", "cpro.baidustatic.com", "pstatp.com",
+                                    "tanx.com", "alimama.com"
                                 )
                                 if (adKeywords.any { urlLower.contains(it) }) {
                                     return android.webkit.WebResourceResponse(
@@ -965,14 +1079,56 @@ fun BrowserAppScreen(onThemeChanged: (String) -> Unit = {}) {
 
                                 val jsToRun = """
                                     (function() {
-                                        if (window.__wtrTextExtractor) {
-                                            return window.__wtrTextExtractor();
-                                        }
                                         window.__wtrTextExtractor = function() {
                                             try {
+                                                let host = window.location.hostname;
+                                                const isTwkan = host.includes("twkan") || host.includes("ttkan") || window.location.href.includes("twkan") || window.location.href.includes("ttkan");
+                                                if (isTwkan) {
+                                                    let contentEl = document.querySelector('#txtcontent0') || document.querySelector('[id^="txtcontent"]') || document.querySelector('.txtcontent');
+                                                    if (contentEl) {
+                                                        // Ensure the contentEl is prepared into lines
+                                                        prepareBrParagraphs(contentEl);
+                                                        
+                                                        let originalElements = Array.from(contentEl.querySelectorAll('p, span.wtr-line-segment') || []);
+                                                        let paragraphs = [];
+                                                        let elements = [];
+                                                        
+                                                        originalElements.forEach(el => {
+                                                            let txt = el.innerText || el.textContent;
+                                                            txt = txt.trim();
+                                                            let t = txt.toLowerCase();
+                                                            if (t.includes("twkan") || t.includes("ttkan")) return;
+                                                            if (txt.length > 3) {
+                                                                paragraphs.push(txt);
+                                                                elements.push(el);
+                                                            }
+                                                        });
+                                                        
+                                                        // Remove old index markers and assign new sequential ones to active elements
+                                                        document.querySelectorAll('[data-wtr-index]').forEach(oldEl => oldEl.removeAttribute('data-wtr-index'));
+                                                        elements.forEach((el, index) => {
+                                                            el.setAttribute('data-wtr-index', index.toString());
+                                                        });
+                                                        
+                                                        let bestIndex = 0;
+                                                        let minDistance = Infinity;
+                                                        for (let i = 0; i < elements.length; i++) {
+                                                            let rect = elements[i].getBoundingClientRect();
+                                                            let dist = Math.abs(rect.top - 100);
+                                                            if (dist < minDistance) {
+                                                                minDistance = dist;
+                                                                bestIndex = i;
+                                                            }
+                                                        }
+                                                        return JSON.stringify({
+                                                            paragraphs: paragraphs,
+                                                            startIndex: bestIndex
+                                                         });
+                                                    }
+                                                }
+                                                
                                                 let paragraphs = [];
                                                 let elements = [];
-                                                let host = window.location.hostname;
                                                 
                                                 const containerSelector = "$containerSelectorStrEscaped";
                                                 const pSelector = "$pSelEscaped";
@@ -1022,38 +1178,71 @@ fun BrowserAppScreen(onThemeChanged: (String) -> Unit = {}) {
                                                     if (!contentEl) return;
                                                     if (contentEl.querySelector('.wtr-line-segment') || contentEl.querySelector('.wtr-focus-highlight')) return;
                                                     
-                                                    let children = Array.from(contentEl.childNodes);
-                                                    let newHtml = "";
-                                                    let currentGroup = "";
-
-                                                    children.forEach(node => {
-                                                        if (node.nodeType === 3) {
-                                                            currentGroup += node.textContent;
-                                                        } else if (node.nodeType === 1) {
-                                                            if (node.tagName.toLowerCase() === 'br') {
-                                                                if (currentGroup.trim().length > 0) {
-                                                                    newHtml += '<span class="wtr-line-segment">' + currentGroup.trim() + '</span><br>';
-                                                                    currentGroup = "";
+                                                    const isTwkan = window.location.hostname.includes("twkan") || window.location.hostname.includes("ttkan") || window.location.href.includes("twkan") || window.location.href.includes("ttkan");
+                                                    if (isTwkan) {
+                                                        contentEl.querySelectorAll("div.txtad, div.txtcenter, div.ad, script, noscript, iframe, ins, .ad-placement, #ad-container").forEach(el => el.remove());
+                                                        let paragraphs = [];
+                                                        let currentPart = [];
+                                                        
+                                                        function flushPart() {
+                                                            if (currentPart.length > 0) {
+                                                                let joined = currentPart.join(" ").trim();
+                                                                joined = joined.replace(/^[\u2003\u3000\t ]+/g, "").trim();
+                                                                if (joined.length > 5) {
+                                                                    paragraphs.push(joined);
                                                                 }
-                                                            } else if (node.tagName.toLowerCase() === 'p') {
-                                                                 if (currentGroup.trim().length > 0) {
-                                                                    newHtml += '<span class="wtr-line-segment">' + currentGroup.trim() + '</span>';
-                                                                    currentGroup = "";
-                                                                }
-                                                                newHtml += node.outerHTML;
-                                                            } else {
-                                                                currentGroup += node.outerHTML;
+                                                                currentPart = [];
                                                             }
                                                         }
-                                                    });
-                                                    
-                                                    if (currentGroup.trim().length > 0) {
-                                                        newHtml += '<span class="wtr-line-segment">' + currentGroup.trim() + '</span>';
-                                                    }
-                                                    
-                                                    if (newHtml.length > 10) {
+                                                        
+                                                        let children = Array.from(contentEl.childNodes);
+                                                        children.forEach(node => {
+                                                            if (node.nodeType === 3) {
+                                                                let txt = node.textContent.trim();
+                                                                if (txt) currentPart.push(txt);
+                                                            } else if (node.nodeType === 1) {
+                                                                let tagName = node.tagName.toLowerCase();
+                                                                if (tagName === 'br') {
+                                                                    flushPart();
+                                                                } else if (tagName === 'font' || tagName === 'span' || tagName === 'b' || tagName === 'i' || tagName === 'strong' || tagName === 'em') {
+                                                                    let txt = node.innerText || node.textContent;
+                                                                    txt = txt.trim();
+                                                                    if (txt) currentPart.push(txt);
+                                                                } else {
+                                                                    flushPart();
+                                                                    let txt = node.innerText || node.textContent;
+                                                                    txt = txt.trim();
+                                                                    if (txt.length > 5) {
+                                                                        paragraphs.push(txt);
+                                                                    }
+                                                                }
+                                                            }
+                                                        });
+                                                        flushPart();
+                                                        
+                                                        let newHtml = "";
+                                                        paragraphs.forEach(pText => {
+                                                            newHtml += '<span class="wtr-line-segment">' + pText + '</span><br><br>';
+                                                        });
                                                         contentEl.innerHTML = newHtml;
+                                                        return;
                                                     }
+                                                    
+                                                    let pTags = contentEl.querySelectorAll('p');
+                                                    if (pTags.length > 5) return; 
+                                                    
+                                                    let html = contentEl.innerHTML;
+                                                    let parts = html.split(/<br\s*\/?>/i);
+                                                    let newParts = parts.map(part => {
+                                                        let trimmed = part.replace(/<[^>]+>/g, '').trim();
+                                                        if (trimmed.length > 5) {
+                                                            if (!part.trim().startsWith('<span class="wtr-line-segment"')) {
+                                                                return '<span class="wtr-line-segment">' + part + '</span>';
+                                                            }
+                                                        }
+                                                        return part;
+                                                    });
+                                                    contentEl.innerHTML = newParts.join('<br>');
                                                 }
 
                                                 let containers = [];
@@ -1122,6 +1311,11 @@ fun BrowserAppScreen(onThemeChanged: (String) -> Unit = {}) {
                                                         });
                                                     }
                                                 }
+
+                                                document.querySelectorAll('[data-wtr-index]').forEach(el => el.removeAttribute('data-wtr-index'));
+                                                elements.forEach((el, index) => {
+                                                    el.setAttribute('data-wtr-index', index.toString());
+                                                });
 
                                                 let bestIndex = 0;
                                                 let minDistance = Infinity;
@@ -1352,7 +1546,7 @@ fun BrowserAppScreen(onThemeChanged: (String) -> Unit = {}) {
                             return true;
                         }
                         
-                        if (host.includes("timotxt") || host.includes("novel543") || host.includes("twkan")) {
+                        if (host.includes("timotxt") || host.includes("novel543") || host.includes("twkan") || host.includes("ttkan")) {
                             let nextElements = Array.from(document.querySelectorAll('a, button'));
                             
                             function getValidTarget(keywords) {
@@ -1477,6 +1671,7 @@ fun BrowserAppScreen(onThemeChanged: (String) -> Unit = {}) {
     // They are now manually triggered via pageLoadBackgroundLogic inside onPageFinished!
     
     // Pre-extract paragraphs of the current page for fallback background playback on standard webpage TTS speechSynthesis
+    // Pre-extract paragraphs of the current page for fallback background playback on standard webpage TTS speechSynthesis
     LaunchedEffect(isWebLoading, activeTab?.url) {
         if (!isWebLoading) {
             val urlVal = activeTab?.url ?: ""
@@ -1484,106 +1679,171 @@ fun BrowserAppScreen(onThemeChanged: (String) -> Unit = {}) {
                 delay(1200) // Settle DOM delay
                 val webView = currentActiveWebView
                 if (webView != null) {
+                    val support = com.example.sites.WebsiteSupportRegistry.findSupport(urlVal)
+                    val containerSelectorStr = support?.containerSelectors?.joinToString(", ") ?: ""
+                    val pSel = support?.paragraphSelector ?: "p, .wtr-line-segment"
+                    val excludeClasses = (support?.excludeSelectors ?: emptyList()).ifEmpty { 
+                        com.example.sites.commons.CommonSelectors.COMMON_EXCLUDE 
+                    }
+                    val excludeClassesStr = excludeClasses.joinToString(", ")
+                    val requiresBrPrepVal = if (support?.requiresBrPreparation == true) "true" else "false"
+                    val siteJunkList = support?.siteSpecificJunkKeywords ?: emptyList()
+                    val siteJunkJson = siteJunkList.joinToString(separator = ", ") { "\"${it.replace("\"", "\\\"")}\"" }
+
+                    val containerSelectorStrEscaped = containerSelectorStr.replace("\"", "\\\"")
+                    val pSelEscaped = pSel.replace("\"", "\\\"")
+                    val excludeClassesStrEscaped = excludeClassesStr.replace("\"", "\\\"")
+
                     webView.evaluateJavascript(
                         """
                         (function() {
                             let paragraphs = [];
                             let host = window.location.hostname;
                             
+                            const containerSelector = "$containerSelectorStrEscaped";
+                            const pSelector = "$pSelEscaped";
+                            const excludeClass = "$excludeClassesStrEscaped";
+                            const siteJunk = [$siteJunkJson];
+                            const requiresBrPrep = $requiresBrPrepVal;
+                            
                             function isJunk(text) {
                                 let t = text.toLowerCase().trim();
-                                if (t.length < 5) return true;
-                                if (t.includes(".com") || t.includes(".org") || t.includes(".net") || t.includes(".me") || t.includes(".xyz") || t.includes("http://") || t.includes("https://")) {
-                                    if (t.includes("novelbin") || t.includes("novelhall") || t.includes("freewebnovel") || t.includes("fanmtl") || t.includes("timotxt") || t.includes("novel543") || t.includes("twkan") || t.includes("novelhub") || t.includes("novelhubapp") || t.includes("webnovel") || t.includes("wtr-lab")) {
+                                if (t.length < 5) {
+                                    if (/[\u4e00-\u9fa5]{2,}/.test(text) && t.length >= 2) {
+                                        // Keep short Chinese phrases
+                                    } else {
                                         return true;
                                     }
                                 }
+                                if (t.includes("ad-blocker") || t.includes("adblocker") || t.includes("ad block") || t.includes("adblock") || t.includes("please disable") || t.includes("stop your ad blocker") || t.includes("ad blocker detected")) return true;
+                                
+                                if (t.includes(".com") || t.includes(".org") || t.includes(".net") || t.includes(".me") || t.includes(".xyz") || t.includes("http://") || t.includes("https://")) {
+                                    if (t.length < 100) return true;
+                                }
+                                
                                 const promoKeywords = [
                                     "join our discord", "join discord", "patreon", "support me", "support the author",
                                     "rate this", "please review", "please rate", "author's note", "author note",
-                                    "recommend", "translator", "translation", "editor's note", "editor note",
-                                    "find any errors", "broken links", "report us", "if you find any", "novelbin",
-                                    "novelhall", "freewebnovel", "fanmtl", "timotxt", "novel543", "twkan", "novelhub", "novelhubapp", "webnovel", "next chapter",
-                                    "previous chapter", "table of contents", "read online free", "read online for free",
+                                    "editor's note", "editor note",
+                                    "find any errors", "broken links", "report us", "if you find any",
+                                    "next chapter", "previous chapter", "table of contents", "read online free", "read online for free",
                                     "unlocked chapters", "bonus chapters", "sign up", "sign in", "subscribe to",
-                                    "follow my page", "download our app", "read this novel", "other novel", "like this book"
+                                    "follow my page", "download our app", "read this novel", "other novel", "like this book",
+                                    "stop your ad blocker", "ad blocker detected", "本章未完", "点击下一页", "继续阅读", "本章完", "（本章未完）", "(本章完)",
+                                    "最新网址", "手机用户请浏览", "更多精彩内容", "投推荐票", "上一章", "下一章", "目录", "书架", "加入书架", "返回封面"
                                 ];
-                                if (t.length < 300) {
+                                
+                                if (t.length < 250) {
                                     for (let keyword of promoKeywords) {
                                         if (t.includes(keyword)) return true;
+                                    }
+                                    for (let keyword of siteJunk) {
+                                        if (t.includes(keyword.toLowerCase())) return true;
                                     }
                                 }
                                 return false;
                             }
                             
-                            let contentEl = null;
-                            if (host.includes("webnovel")) {
-                                let containers = document.querySelectorAll('.cha-content, .chapter-content, .cha-words, .chapter-inner');
-                                contentEl = containers[0];
-                                if (contentEl) {
-                                    let pTags = contentEl.querySelectorAll('p, .cha-paragraph, .pirate');
+                            function prepareBrParagraphs(contentEl) {
+                                if (!contentEl) return;
+                                if (contentEl.querySelector('.wtr-line-segment') || contentEl.querySelector('.wtr-focus-highlight')) return;
+                                
+                                const isTwkan = window.location.hostname.includes("twkan") || window.location.hostname.includes("ttkan") || window.location.href.includes("twkan") || window.location.href.includes("ttkan");
+                                if (isTwkan) {
+                                    contentEl.querySelectorAll("div.txtad, div.txtcenter, div.ad, script, noscript, iframe, ins, .ad-placement, #ad-container").forEach(el => el.remove());
+                                    let paragraphs = [];
+                                    let currentPart = [];
+                                    
+                                    function flushPart() {
+                                        if (currentPart.length > 0) {
+                                            let joined = currentPart.join(" ").trim();
+                                            joined = joined.replace(/^[\u2003\u3000\t ]+/g, "").trim();
+                                            if (joined.length > 5) {
+                                                paragraphs.push(joined);
+                                            }
+                                            currentPart = [];
+                                        }
+                                    }
+                                    
+                                    let children = Array.from(contentEl.childNodes);
+                                    children.forEach(node => {
+                                        if (node.nodeType === 3) {
+                                            let txt = node.textContent.trim();
+                                            if (txt) currentPart.push(txt);
+                                        } else if (node.nodeType === 1) {
+                                            let tagName = node.tagName.toLowerCase();
+                                            if (tagName === 'br') {
+                                                flushPart();
+                                            } else if (tagName === 'font' || tagName === 'span' || tagName === 'b' || tagName === 'i' || tagName === 'strong' || tagName === 'em') {
+                                                let txt = node.innerText || node.textContent;
+                                                txt = txt.trim();
+                                                if (txt) currentPart.push(txt);
+                                            } else {
+                                                flushPart();
+                                                let txt = node.innerText || node.textContent;
+                                                txt = txt.trim();
+                                                if (txt.length > 5) {
+                                                    paragraphs.push(txt);
+                                                }
+                                            }
+                                        }
+                                    });
+                                    flushPart();
+                                    
+                                    let newHtml = "";
+                                    paragraphs.forEach(pText => {
+                                        newHtml += '<span class="wtr-line-segment">' + pText + '</span><br><br>';
+                                    });
+                                    contentEl.innerHTML = newHtml;
+                                    return;
+                                }
+                                
+                                let pTags = contentEl.querySelectorAll('p');
+                                if (pTags.length > 5) return; 
+                                
+                                let html = contentEl.innerHTML;
+                                if (html) {
+                                    let parts = html.split(/<br\s*\/?>/i);
+                                    let newParts = parts.map(part => {
+                                        let trimmed = part.replace(/<[^>]+>/g, '').trim();
+                                        if (trimmed.length > 5) {
+                                            if (!part.trim().startsWith('<span class="wtr-line-segment"')) {
+                                                return '<span class="wtr-line-segment">' + part + '</span>';
+                                            }
+                                        }
+                                        return part;
+                                    });
+                                    contentEl.innerHTML = newParts.join('<br>');
+                                }
+                            }
+                            
+                            let containers = [];
+                            if (containerSelector) {
+                                let rawContainers = Array.from(document.querySelectorAll(containerSelector));
+                                containers = rawContainers.filter(c => !rawContainers.some(other => other !== c && other.contains(c)));
+                            }
+                            
+                            if (containers.length > 0) {
+                                let seenPTags = new Set();
+                                containers.forEach(contentEl => {
+                                    if (requiresBrPrep) {
+                                        prepareBrParagraphs(contentEl);
+                                    }
+                                    let rawPTags = Array.from(contentEl.querySelectorAll(pSelector));
+                                    let pTags = rawPTags.filter(p => !rawPTags.some(parent => parent !== p && parent.contains(p)));
+                                    
                                     pTags.forEach(p => {
-                                        let text = p.innerText.trim();
-                                        if (text.length > 5 && !isJunk(text)) paragraphs.push(text);
+                                        if (!p.closest(excludeClass)) {
+                                            if (!seenPTags.has(p)) {
+                                                seenPTags.add(p);
+                                                let text = p.innerText.trim();
+                                                if (text.length > 5 && !isJunk(text)) {
+                                                    paragraphs.push(text);
+                                                }
+                                            }
+                                        }
                                     });
-                                }
-                            } else if (host.includes("novelhall")) {
-                                contentEl = document.querySelector('#htmlContent') || document.querySelector('.entry-content');
-                                if (contentEl) {
-                                    contentEl.querySelectorAll('p, .wtr-line-segment').forEach(p => {
-                                        let text = p.innerText.trim();
-                                        if (text.length > 5 && !isJunk(text)) paragraphs.push(text);
-                                    });
-                                }
-                            } else if (host.includes("fanmtl")) {
-                                contentEl = document.querySelector('.chapter-content') || document.querySelector('.read-content');
-                                if (contentEl) {
-                                    contentEl.querySelectorAll('p').forEach(p => {
-                                        let text = p.innerText.trim();
-                                        if (text.length > 5 && !isJunk(text)) paragraphs.push(text);
-                                    });
-                                }
-                            } else if (host.includes("novelbin")) {
-                                contentEl = document.querySelector('#chr-content');
-                                if (contentEl) {
-                                    contentEl.querySelectorAll('p').forEach(p => {
-                                        let text = p.innerText.trim();
-                                        if (text.length > 5 && !isJunk(text)) paragraphs.push(text);
-                                    });
-                                }
-                            } else if (host.includes("freewebnovel")) {
-                                contentEl = document.querySelector('.txt');
-                                if (contentEl) {
-                                    contentEl.querySelectorAll('p').forEach(p => {
-                                        let text = p.innerText.trim();
-                                        if (text.length > 5 && !isJunk(text)) paragraphs.push(text);
-                                    });
-                                }
-                            } else if (host.includes("timotxt") || host.includes("novel543") || host.includes("wtr-lab")) {
-                                contentEl = host.includes("timotxt") ? (document.querySelector('.show_txt') || document.querySelector('#content') || document.querySelector('.read-content')) : (document.querySelector('.read-content') || document.querySelector('#content') || document.querySelector('.show_txt') || document.querySelector('.wtr-reader-content'));
-                                if (contentEl) {
-                                    let pTags = contentEl.querySelectorAll('p, .wtr-line-segment');
-                                    pTags.forEach(p => {
-                                        let text = p.innerText.trim();
-                                        if (text.length > 5 && !isJunk(text)) paragraphs.push(text);
-                                    });
-                                }
-                            } else if (host.includes("twkan")) {
-                                contentEl = document.querySelector('#htmlContent') || document.querySelector('#content') || document.querySelector('.active') || document.querySelector('.read-content');
-                                if (contentEl) {
-                                    contentEl.querySelectorAll('p').forEach(p => {
-                                        let text = p.innerText.trim();
-                                        if (text.length > 5 && !isJunk(text)) paragraphs.push(text);
-                                    });
-                                }
-                            } else if (host.includes("novelhub")) {
-                                contentEl = document.querySelector('#chr-content') || document.querySelector('.chapter-content') || document.querySelector('.read-content') || document.querySelector('.entry-content') || document.querySelector('.reader-content');
-                                if (contentEl) {
-                                    contentEl.querySelectorAll('p').forEach(p => {
-                                        let text = p.innerText.trim();
-                                        if (text.length > 5 && !isJunk(text)) paragraphs.push(text);
-                                    });
-                                }
+                                });
                             }
                             
                             if (paragraphs.length === 0) {
@@ -1598,6 +1858,7 @@ fun BrowserAppScreen(onThemeChanged: (String) -> Unit = {}) {
                                         }
                                     }
                                 });
+                                
                                 if (bestContainer && maxPLength > 3) {
                                     bestContainer.querySelectorAll('p').forEach(p => {
                                         let text = p.innerText.trim();
@@ -1668,33 +1929,90 @@ fun BrowserAppScreen(onThemeChanged: (String) -> Unit = {}) {
     // Scroll active reading paragraph into view and highlight it (Auto-Focus mode)
     LaunchedEffect(currentTrackIndex, isPlayerRunning, autoFocusParagraphs, currentActiveWebView) {
         val webView = currentActiveWebView ?: return@LaunchedEffect
-        if (isPlayerRunning && autoFocusParagraphs) {
+        val urlVal = activeTab?.url ?: ""
+        if (isPlayerRunning && autoFocusParagraphs && urlVal.isNotEmpty()) {
+            val support = com.example.sites.WebsiteSupportRegistry.findSupport(urlVal)
+            val containerSelectorStr = support?.containerSelectors?.joinToString(", ") ?: ""
+            val pSel = support?.paragraphSelector ?: "p, .wtr-line-segment"
+            val excludeClasses = (support?.excludeSelectors ?: emptyList()).ifEmpty { 
+                com.example.sites.commons.CommonSelectors.COMMON_EXCLUDE 
+            }
+            val excludeClassesStr = excludeClasses.joinToString(", ")
+            val requiresBrPrepVal = if (support?.requiresBrPreparation == true) "true" else "false"
+            val siteJunkList = support?.siteSpecificJunkKeywords ?: emptyList()
+            val siteJunkJson = siteJunkList.joinToString(separator = ", ") { "\"${it.replace("\"", "\\\"")}\"" }
+
+            val containerSelectorStrEscaped = containerSelectorStr.replace("\"", "\\\"")
+            val pSelEscaped = pSel.replace("\"", "\\\"")
+            val excludeClassesStrEscaped = excludeClassesStr.replace("\"", "\\\"")
+
             val jsCode = """
                 (function() {
                     const targetIndex = $currentTrackIndex;
+                    
+                    document.querySelectorAll('.wtr-focus-highlight').forEach(el => {
+                        el.classList.remove('wtr-focus-highlight');
+                        el.style.backgroundColor = '';
+                        el.style.borderRadius = '';
+                        el.style.padding = '';
+                        el.style.transition = '';
+                    });
+                    
+                    let fastTarget = document.querySelector('[data-wtr-index="' + targetIndex + '"]');
+                    if (fastTarget) {
+                        fastTarget.classList.add('wtr-focus-highlight');
+                        fastTarget.style.transition = 'background-color 0.4s ease-in-out';
+                        fastTarget.style.backgroundColor = 'rgba(255, 235, 59, 0.25)';
+                        fastTarget.style.borderRadius = '6px';
+                        fastTarget.style.padding = '4px 8px';
+                        fastTarget.scrollIntoView({
+                            behavior: 'smooth',
+                            block: 'center'
+                        });
+                        return;
+                    }
+
                     const host = window.location.hostname;
+                    
+                    const containerSelector = "$containerSelectorStrEscaped";
+                    const pSelector = "$pSelEscaped";
+                    const excludeClass = "$excludeClassesStrEscaped";
+                    const siteJunk = [$siteJunkJson];
+                    const requiresBrPrep = $requiresBrPrepVal;
                     
                     function isJunk(text) {
                         let t = text.toLowerCase().trim();
-                        if (t.length < 5) return true;
-                        if (t.includes(".com") || t.includes(".org") || t.includes(".net") || t.includes(".me") || t.includes(".xyz") || t.includes("http://") || t.includes("https://")) {
-                            if (t.includes("novelbin") || t.includes("novelhall") || t.includes("freewebnovel") || t.includes("fanmtl") || t.includes("timotxt") || t.includes("novel543") || t.includes("twkan") || t.includes("novelhub") || t.includes("novelhubapp") || t.includes("webnovel")) {
+                        if (t.length < 5) {
+                            if (/[\u4e00-\u9fa5]{2,}/.test(text) && t.length >= 2) {
+                                // Keep short Chinese phrases
+                            } else {
                                 return true;
                             }
                         }
+                        if (t.includes("ad-blocker") || t.includes("adblocker") || t.includes("ad block") || t.includes("adblock") || t.includes("please disable") || t.includes("stop your ad blocker") || t.includes("ad blocker detected")) return true;
+                        
+                        if (t.includes(".com") || t.includes(".org") || t.includes(".net") || t.includes(".me") || t.includes(".xyz") || t.includes("http://") || t.includes("https://")) {
+                            if (t.length < 100) return true;
+                        }
+                        
                         const promoKeywords = [
                             "join our discord", "join discord", "patreon", "support me", "support the author",
                             "rate this", "please review", "please rate", "author's note", "author note",
-                            "recommend", "translator", "translation", "editor's note", "editor note",
-                            "find any errors", "broken links", "report us", "if you find any", "novelbin",
-                            "novelhall", "freewebnovel", "fanmtl", "timotxt", "novel543", "twkan", "novelhub", "novelhubapp", "webnovel", "next chapter",
-                            "previous chapter", "table of contents", "read online free", "read online for free",
+                            "editor's note", "editor note",
+                            "find any errors", "broken links", "report us", "if you find any",
+                            "next chapter", "previous chapter", "table of contents", "read online free", "read online for free",
                             "unlocked chapters", "bonus chapters", "sign up", "sign in", "subscribe to",
-                            "follow my page", "download our app", "read this novel", "other novel", "like this book"
+                            "follow my page", "download our app", "read this novel", "other novel", "like this book",
+                            "stop your ad blocker", "ad blocker detected", "本章未完", "点击下一页", "继续阅读", "本章完", "（本章未完）", "(本章完)",
+                            "最新网址", "手机用户请浏览", "更多精彩内容", "投推荐票", "上一章", "下一章", "目录", "书架", "加入书架", "返回封面"
                         ];
-                        if (t.length < 300) {
+                        
+                        if (t.length < 250) {
                             for (let keyword of promoKeywords) {
                                 if (t.includes(keyword)) return true;
+                            }
+                            for (let keyword of siteJunk) {
+                                if (t.includes(keyword.toLowerCase())) return true;
                             }
                         }
                         return false;
@@ -1703,119 +2021,106 @@ fun BrowserAppScreen(onThemeChanged: (String) -> Unit = {}) {
                     function prepareBrParagraphs(contentEl) {
                         if (!contentEl) return;
                         if (contentEl.querySelector('.wtr-line-segment') || contentEl.querySelector('.wtr-focus-highlight')) return;
-                        let pTags = contentEl.querySelectorAll('p');
-                        if (pTags.length > 3) return; 
                         
-                        let html = contentEl.innerHTML;
-                        let parts = html.split(/<br\s*\/?>/i);
-                        let newParts = parts.map(part => {
-                            let trimmed = part.replace(/<[^>]+>/g, '').trim();
-                            if (trimmed.length > 5) {
-                                if (!part.trim().startsWith('<span class="wtr-line-segment"')) {
-                                    return '<span class="wtr-line-segment">' + part + '</span>';
+                        const isTwkan = window.location.hostname.includes("twkan") || window.location.hostname.includes("ttkan") || window.location.href.includes("twkan") || window.location.href.includes("ttkan");
+                        if (isTwkan) {
+                            contentEl.querySelectorAll("div.txtad, div.txtcenter, div.ad, script, noscript, iframe, ins, .ad-placement, #ad-container").forEach(el => el.remove());
+                            let paragraphs = [];
+                            let currentPart = [];
+                            
+                            function flushPart() {
+                                if (currentPart.length > 0) {
+                                    let joined = currentPart.join(" ").trim();
+                                    joined = joined.replace(/^[\u2003\u3000\t ]+/g, "").trim();
+                                    if (joined.length > 5) {
+                                        paragraphs.push(joined);
+                                    }
+                                    currentPart = [];
                                 }
                             }
-                            return part;
-                        });
-                        contentEl.innerHTML = newParts.join('<br>');
+                            
+                            let children = Array.from(contentEl.childNodes);
+                            children.forEach(node => {
+                                if (node.nodeType === 3) {
+                                    let txt = node.textContent.trim();
+                                    if (txt) currentPart.push(txt);
+                                } else if (node.nodeType === 1) {
+                                    let tagName = node.tagName.toLowerCase();
+                                    if (tagName === 'br') {
+                                        flushPart();
+                                    } else if (tagName === 'font' || tagName === 'span' || tagName === 'b' || tagName === 'i' || tagName === 'strong' || tagName === 'em') {
+                                        let txt = node.innerText || node.textContent;
+                                        txt = txt.trim();
+                                        if (txt) currentPart.push(txt);
+                                    } else {
+                                        flushPart();
+                                        let txt = node.innerText || node.textContent;
+                                        txt = txt.trim();
+                                        if (txt.length > 5) {
+                                            paragraphs.push(txt);
+                                        }
+                                    }
+                                }
+                            });
+                            flushPart();
+                            
+                            let newHtml = "";
+                            paragraphs.forEach(pText => {
+                                newHtml += '<span class="wtr-line-segment">' + pText + '</span><br><br>';
+                            });
+                            contentEl.innerHTML = newHtml;
+                            return;
+                        }
+                        
+                        let pTags = contentEl.querySelectorAll('p');
+                        if (pTags.length > 5) return; 
+                        
+                        let html = contentEl.innerHTML;
+                        if (html) {
+                            let parts = html.split(/<br\s*\/?>/i);
+                            let newParts = parts.map(part => {
+                                let trimmed = part.replace(/<[^>]+>/g, '').trim();
+                                if (trimmed.length > 5) {
+                                    if (!part.trim().startsWith('<span class="wtr-line-segment"')) {
+                                        return '<span class="wtr-line-segment">' + part + '</span>';
+                                    }
+                                }
+                                return part;
+                            });
+                            contentEl.innerHTML = newParts.join('<br>');
+                        }
                     }
 
                     let elements = [];
+                    let containers = [];
+                    if (containerSelector) {
+                        let rawContainers = Array.from(document.querySelectorAll(containerSelector));
+                        containers = rawContainers.filter(c => !rawContainers.some(other => other !== c && other.contains(c)));
+                    }
                     
-                    if (host.includes("webnovel")) {
-                        let rawContainers = Array.from(document.querySelectorAll('.cha-content, .chapter-content, .cha-words, .chapter-inner'));
-                        let containers = rawContainers.filter(c => !rawContainers.some(other => other !== c && other.contains(c)));
+                    if (containers.length > 0) {
+                        let seenPTags = new Set();
                         containers.forEach(contentEl => {
-                            let pSelector = 'p, .cha-paragraph, .pirate';
+                            if (requiresBrPrep) {
+                                prepareBrParagraphs(contentEl);
+                            }
                             let rawPTags = Array.from(contentEl.querySelectorAll(pSelector));
                             let pTags = rawPTags.filter(p => !rawPTags.some(parent => parent !== p && parent.contains(p)));
+                            
                             pTags.forEach(p => {
-                                if (!p.closest('.author-note, .gift-box, .recommend-box, .comment-area, .m-comment, .user-opinion, .review-item, .j_recommendation, .book-recommend, .cha-nav, .chapter-control')) {
-                                    let text = p.innerText.trim();
-                                    if (text.length > 5 && !isJunk(text)) {
-                                        elements.push(p);
+                                if (!p.closest(excludeClass)) {
+                                    if (!seenPTags.has(p)) {
+                                        seenPTags.add(p);
+                                        let text = p.innerText.trim();
+                                        if (text.length > 5 && !isJunk(text)) {
+                                            elements.push(p);
+                                        }
                                     }
                                 }
                             });
                         });
-                    } else if (host.includes("novelhall")) {
-                        let contentEl = document.querySelector('#htmlContent') || document.querySelector('.entry-content') || document.querySelector('.active');
-                        if (contentEl) {
-                            prepareBrParagraphs(contentEl);
-                            let pTags = contentEl.querySelectorAll('p, .wtr-line-segment');
-                            pTags.forEach(p => {
-                                if (!p.closest('.nav, .nav-btn, .next_chap, .prev_chap, .next-page, .prev-page')) {
-                                    let text = p.innerText.trim();
-                                    if (text.length > 5 && !isJunk(text)) elements.push(p);
-                                }
-                            });
-                        }
-                    } else if (host.includes("fanmtl")) {
-                        let contentEl = document.querySelector('.chapter-content') || document.querySelector('.read-content') || document.querySelector('#chapter-content') || document.querySelector('.content-area');
-                        if (contentEl) {
-                            contentEl.querySelectorAll('p').forEach(p => {
-                                if (!p.closest('.author-note, .next_chap, .prev_chap, .nav-links')) {
-                                    let text = p.innerText.trim();
-                                    if (text.length > 5 && !isJunk(text)) elements.push(p);
-                                }
-                            });
-                        }
-                    } else if (host.includes("novelbin")) {
-                        let contentEl = document.querySelector('#chr-content') || document.querySelector('.chr-c') || document.querySelector('#chapter-content') || document.querySelector('.chapter-container');
-                        if (contentEl) {
-                            contentEl.querySelectorAll('p').forEach(p => {
-                                if (!p.closest('#chr-nav, .chr-nav, .ads, .adsbygoogle, .btn-group, .custom-control, .category, .desc, .title-book')) {
-                                    let text = p.innerText.trim();
-                                    if (text.length > 5 && !isJunk(text)) elements.push(p);
-                                }
-                            });
-                        }
-                    } else if (host.includes("freewebnovel")) {
-                        let contentEl = document.querySelector('.txt') || document.querySelector('#htmlContent') || document.querySelector('.chapter-content');
-                        if (contentEl) {
-                            contentEl.querySelectorAll('p').forEach(p => {
-                                if (!p.closest('.ads, .adsbygoogle, .nav-links, .chapter-nav')) {
-                                    let text = p.innerText.trim();
-                                    if (text.length > 5 && !isJunk(text)) elements.push(p);
-                                }
-                            });
-                        }
-                    } else if (host.includes("timotxt") || host.includes("novel543")) {
-                        let contentEl = host.includes("timotxt") ? (document.querySelector('.show_txt') || document.querySelector('#content') || document.querySelector('.read-content')) : (document.querySelector('.show_txt') || document.querySelector('#content'));
-                        if (contentEl) {
-                            prepareBrParagraphs(contentEl);
-                            let pTags = contentEl.querySelectorAll('p, .wtr-line-segment');
-                            pTags.forEach(p => {
-                                if (!p.closest('.nav, .ads, .menu, .chapter-nav')) {
-                                    let text = p.innerText.trim();
-                                    if (text.length > 5 && !isJunk(text)) elements.push(p);
-                                }
-                            });
-                        }
-                    } else if (host.includes("twkan")) {
-                        let contentEl = document.querySelector('#htmlContent') || document.querySelector('#content') || document.querySelector('.active') || document.querySelector('.read-content');
-                        if (contentEl) {
-                            let pTags = contentEl.querySelectorAll('p');
-                            pTags.forEach(p => {
-                                if (!p.closest('.nav, .ads, .menu, .chapter-nav')) {
-                                    let text = p.innerText.trim();
-                                    if (text.length > 5 && !isJunk(text)) elements.push(p);
-                                }
-                            });
-                        }
-                    } else if (host.includes("novelhub")) {
-                        let contentEl = document.querySelector('#chr-content') || document.querySelector('.chapter-content') || document.querySelector('.read-content') || document.querySelector('.entry-content') || document.querySelector('.reader-content');
-                        if (contentEl) {
-                            let pTags = contentEl.querySelectorAll('p');
-                            pTags.forEach(p => {
-                                if (!p.closest('.nav, .ads, .menu, .chapter-nav')) {
-                                    let text = p.innerText.trim();
-                                    if (text.length > 5 && !isJunk(text)) elements.push(p);
-                                }
-                            });
-                        }
                     }
-
+                    
                     if (elements.length === 0) {
                         let bestContainer = null;
                         let maxPLength = 0;
@@ -1837,7 +2142,7 @@ fun BrowserAppScreen(onThemeChanged: (String) -> Unit = {}) {
                                 }
                             });
                         } else {
-                            let elems = document.querySelectorAll('p, li, h1, h2, h3, [class*="paragraph"], [id*="paragraph"]');
+                            let elems = document.querySelectorAll('p, li, h1, h2, h3, [class*="paragraph"], [id*="paragraph"], .wtr-line-segment');
                             elems.forEach(el => {
                                 let t = el.innerText.trim();
                                 let isChinese = /[\u4e00-\u9fa5]/.test(t);
