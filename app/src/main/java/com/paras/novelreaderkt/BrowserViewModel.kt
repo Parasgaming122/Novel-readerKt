@@ -31,19 +31,19 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     private val _searchEngine = MutableStateFlow("https://www.google.com/search?q=")
     val searchEngine: StateFlow<String> = _searchEngine
 
-    private var lastHistoryUrl: String? = null
+    @Volatile private var lastHistoryUrl: String? = null
 
     // Backstack / Navigation History management for tabs
-    private val tabNavigationHistory = mutableListOf<Long>()
+    private val tabNavigationHistory = java.util.LinkedHashSet<Long>()
 
     fun recordTabVisit(tabId: Long) {
         if (tabId <= 0) return
-        tabNavigationHistory.removeAll { it == tabId }
+        tabNavigationHistory.remove(tabId)
         tabNavigationHistory.add(tabId)
     }
 
     fun forgetTab(tabId: Long) {
-        tabNavigationHistory.removeAll { it == tabId }
+        tabNavigationHistory.remove(tabId)
     }
 
     init {
@@ -105,12 +105,11 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     fun addNewTab(url: String = "chrome://newtab", title: String = "New Tab", groupId: Long? = null) {
         viewModelScope.launch {
             com.paras.novelreaderkt.WtrLogManager.log(getApplication(), "addNewTab requested: url=$url, title=$title")
-            val tabsList = repository.getAllTabs()
-            // Mark all current tabs as not current
-            tabsList.forEach {
-                if (it.isCurrent) {
-                    repository.updateTab(it.copy(isCurrent = false))
-                }
+            // Use in-memory snapshot to avoid redundant DB reads
+            val tabsList = allTabs.value
+            val previousCurrent = tabsList.find { it.isCurrent }
+            if (previousCurrent != null) {
+                repository.updateTab(previousCurrent.copy(isCurrent = false))
             }
             val newTab = TabEntry(url = url, title = title, isCurrent = true, groupId = groupId)
             val id = repository.insertTab(newTab)
@@ -122,18 +121,17 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
 
     fun switchToTab(tab: TabEntry) {
         viewModelScope.launch {
-            val tabsList = repository.getAllTabs()
-            tabsList.forEach {
-                if (it.id == tab.id) {
-                    val updated = it.copy(isCurrent = true)
-                    repository.updateTab(updated)
-                    _currentTab.value = updated
-                    _currentUrlInput.value = updated.url
-                    recordTabVisit(updated.id)
-                } else if (it.isCurrent) {
-                    repository.updateTab(it.copy(isCurrent = false))
-                }
+            // Use in-memory snapshot to avoid redundant DB reads
+            val tabsList = allTabs.value
+            val previousCurrent = tabsList.find { it.isCurrent }
+            if (previousCurrent != null && previousCurrent.id != tab.id) {
+                repository.updateTab(previousCurrent.copy(isCurrent = false))
             }
+            val updated = tab.copy(isCurrent = true)
+            repository.updateTab(updated)
+            _currentTab.value = updated
+            _currentUrlInput.value = updated.url
+            recordTabVisit(updated.id)
         }
     }
 
@@ -149,7 +147,8 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
 
     fun groupTabs(tabIds: List<Long>, targetGroupId: Long) {
         viewModelScope.launch {
-            val tabsList = repository.getAllTabs()
+            // Use in-memory snapshot to avoid redundant DB reads
+            val tabsList = allTabs.value
             tabsList.forEach {
                 if (tabIds.contains(it.id)) {
                     repository.updateTab(it.copy(groupId = targetGroupId))
@@ -175,7 +174,8 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         viewModelScope.launch {
             com.paras.novelreaderkt.WtrLogManager.log(getApplication(), "closeTab requested: ID=${tab.id}, url=${tab.url}")
             forgetTab(tab.id)
-            val tabsList = repository.getAllTabs()
+            // Use in-memory snapshot to avoid redundant DB reads
+            val tabsList = allTabs.value
             if (tabsList.size <= 1) {
                 // If closing single last tab, just reset it to home
                 val updated = tab.copy(url = "chrome://newtab", title = "New Tab", isCurrent = true, groupId = null)
@@ -203,15 +203,21 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
 
     fun handleBackNavigation(onFinish: () -> Unit) {
         viewModelScope.launch {
-            val tabs = repository.getAllTabs()
             val current = _currentTab.value
-            if (tabs.size > 1 && current != null) {
-                com.paras.novelreaderkt.WtrLogManager.log(getApplication(), "handleBackNavigation closing current tab ID=${current.id}")
+            if (_currentTab.value != null && tabNavigationHistory.size >= 1) {
+                com.paras.novelreaderkt.WtrLogManager.log(getApplication(), "handleBackNavigation closing current tab ID=${current?.id}")
+                
+                // Use in-memory tab list snapshot to avoid redundant DB reads
+                val tabs = allTabs.value
+                if (tabs.size <= 1) {
+                    onFinish()
+                    return@launch
+                }
                 
                 // 1. Close the current tab
-                closeTab(current)
-                forgetTab(current.id)
-
+                forgetTab(current?.id ?: return@launch)
+                repository.deleteTab(current.id)
+                
                 // 2. Identify and navigate back to the previous active tab
                 val lastTabId = tabNavigationHistory.lastOrNull()
                 val targetTab = if (lastTabId != null) {
@@ -223,7 +229,12 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                 // Fallback to any remaining tab if history trace is unavailable
                 val fallbackTab = targetTab ?: tabs.firstOrNull { it.id != current.id }
                 if (fallbackTab != null) {
-                    switchToTab(fallbackTab)
+                    // Direct in-memory switch, avoids additional DB reads
+                    val updated = fallbackTab.copy(isCurrent = true)
+                    repository.updateTab(updated)
+                    _currentTab.value = updated
+                    _currentUrlInput.value = updated.url
+                    recordTabVisit(updated.id)
                 } else {
                     onFinish()
                 }
@@ -284,10 +295,13 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                 lastHistoryUrl = sanitizedUrl
                 repository.insertHistory(sanitizedUrl, sanitizedTitle)
             }
-            try {
-                repository.updateReadingProgress(sanitizedUrl, sanitizedTitle)
-            } catch (e: Exception) {
-                e.printStackTrace()
+            // Run reading progress update off main thread — it does DB queries
+            viewModelScope.launch(Dispatchers.IO) {
+                try {
+                    repository.updateReadingProgress(sanitizedUrl, sanitizedTitle)
+                } catch (e: Exception) {
+                    e.printStackTrace()
+                }
             }
         }
     }
@@ -530,20 +544,30 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                     StreamingJsonParser.parseBackupStream(processingStream)
                 }
 
-                // 1. Restore SharedPreferences
+                // 1. Restore SharedPreferences (whitelist only known safe keys)
                 val sharedPrefs = context.getSharedPreferences("wtr_browser_settings", Context.MODE_PRIVATE)
                 val editor = sharedPrefs.edit()
 
+                val safeSettingsKeys = setOf(
+                    "app_theme", "custom_text_zoom", "force_dark_content",
+                    "enable_web_trackplayer", "auto_focus_paragraphs", "remember_paragraphs",
+                    "auto_translate_enabled", "auto_translate_domains",
+                    "gemini_translate_enabled", "ad_blocker_enabled", "anti_captcha_delay",
+                    "tts_speed", "tts_pitch", "tts_voice_name", "tts_accent",
+                    "enable_logs"
+                )
                 backupData.settings.forEach { (key, value) ->
-                    when (value) {
-                        is String -> editor.putString(key, value)
-                        is Int -> editor.putInt(key, value)
-                        is Boolean -> editor.putBoolean(key, value)
-                        is Long -> editor.putLong(key, value)
-                        is Float -> editor.putFloat(key, value)
-                        is Double -> {
-                            // SharedPreferences doesn't support Double, but standard fallback
-                            editor.putFloat(key, value.toFloat())
+                    if (key in safeSettingsKeys) {
+                        when (value) {
+                            is String -> editor.putString(key, value)
+                            is Int -> editor.putInt(key, value)
+                            is Boolean -> editor.putBoolean(key, value)
+                            is Long -> editor.putLong(key, value)
+                            is Float -> editor.putFloat(key, value)
+                            is Double -> {
+                                // SharedPreferences doesn't support Double, but standard fallback
+                                editor.putFloat(key, value.toFloat())
+                            }
                         }
                     }
                 }

@@ -98,6 +98,11 @@ fun isSameBaseOrTranslatedUrl(url1: String, url2: String): Boolean {
 fun BrowserAppScreen(onThemeChanged: (String) -> Unit = {}) {
     val context = LocalContext.current
     val viewModel: BrowserViewModel = viewModel()
+
+    // Store context for background operations (WtrNextChapterHandler reads settings from it)
+    LaunchedEffect(Unit) {
+        WtrAudioControlBridge.lastKnownContext = context
+    }
     
     val activeTab by viewModel.currentTab.collectAsStateWithLifecycle()
     val urlInput by viewModel.currentUrlInput.collectAsStateWithLifecycle()
@@ -437,36 +442,60 @@ fun BrowserAppScreen(onThemeChanged: (String) -> Unit = {}) {
                     } catch (e: Exception) { e.printStackTrace() } finally {
                         isGeminiTranslating = false
                         if (WtrAudioControlBridge.isAudiobookModeActive.value) {
-                            delay(400)
+                            delay(150)
                             runHtmlTextExtractionAndPlayRef?.invoke()
                         }
                     }
                 } else {
                     if (WtrAudioControlBridge.isAudiobookModeActive.value) {
                          val isTranslating = currentAutoTranslateEnabled && isDomainMatchedForTranslation(urlVal)
+
                          if (isTranslating && !urlVal.contains("translate.goog")) {
-                             // Wait up to 1.5s to see if a redirect starts 
+                             // This page needs Google Translate but hasn't been redirected yet.
+                             // The native handler already loaded the translate.goog URL directly,
+                             // so this path should rarely be hit. But if it is, do NOT extract —
+                             // the translated page's onPageFinished will handle extraction.
+                             com.paras.novelreaderkt.WtrLogManager.log(context, "pageLoadBackgroundLogic: untranslated page loaded during audiobook mode. Waiting for translate.goog redirect...")
+                             // Give a short window for the redirect to happen
                              var redirected = false
-                             for (i in 1..5) {
-                                 delay(300)
+                             for (i in 1..10) {
+                                 delay(500)
                                  val currentTabUrl = viewModel.currentTab.value?.url ?: ""
-                                 if (currentTabUrl.contains("translate.goog") || !isDomainMatchedForTranslation(currentTabUrl)) {
+                                 val ttsTabWebView = WtrAudioControlBridge.activeTtsTabId.value?.let { webViewsMap[it] }
+                                 val webViewUrl = ttsTabWebView?.url ?: currentTabUrl
+                                 if (webViewUrl.contains("translate.goog")) {
                                      redirected = true
+                                     com.paras.novelreaderkt.WtrLogManager.log(context, "pageLoadBackgroundLogic: redirect detected to $webViewUrl, waiting for translated page...")
                                      break
                                  }
                              }
-                             if (!redirected) {
-                                 // No redirect occurred, extract and play anyway!
-                                 val isWtrLab = urlVal.contains("wtr-lab.com") || urlVal.isEmpty()
-                                 if (!isWtrLab && isNovelChapterUrl(urlVal)) {
-                                     delay(500)
-                                     runHtmlTextExtractionAndPlayRef?.invoke()
-                                 }
+                             if (redirected) {
+                                 // The redirect happened but we need to wait for the translated page to load.
+                                 // Don't extract here — the translated page's own onPageFinished will call us again.
+                                 return@launch
                              }
-                         } else {
+                             // No redirect occurred — this shouldn't happen with native handler but handle gracefully
+                             com.paras.novelreaderkt.WtrLogManager.log(context, "pageLoadBackgroundLogic: no redirect detected, extracting untranslated page")
                              val isWtrLab = urlVal.contains("wtr-lab.com") || urlVal.isEmpty()
                              if (!isWtrLab && isNovelChapterUrl(urlVal)) {
-                                 delay(800)
+                                 delay(300)
+                                 runHtmlTextExtractionAndPlayRef?.invoke()
+                             }
+                         } else if (urlVal.contains("translate.goog")) {
+                             // This IS the translated page — check if it's still in Chinese (translation not done yet)
+                             com.paras.novelreaderkt.WtrLogManager.log(context, "pageLoadBackgroundLogic: translate.goog page loaded, checking if translation is complete...")
+                             delay(800) // Give Google Translate a moment to finish in-page translation
+                             // Extract and play — the runHtmlTextExtractionAndPlay already has retry logic
+                             // for Chinese content on translate.goog pages (waits up to 7s for translation to complete)
+                             val isWtrLab = urlVal.contains("wtr-lab.com")
+                             if (!isWtrLab && isNovelChapterUrl(urlVal)) {
+                                 runHtmlTextExtractionAndPlayRef?.invoke()
+                             }
+                         } else {
+                             // Not translating, regular page — extract and play
+                             val isWtrLab = urlVal.contains("wtr-lab.com") || urlVal.isEmpty()
+                             if (!isWtrLab && isNovelChapterUrl(urlVal)) {
+                                 delay(400)
                                  runHtmlTextExtractionAndPlayRef?.invoke()
                              } else {
                                  WtrAudioControlBridge.setIsPlayerRunning(false)
@@ -482,8 +511,37 @@ fun BrowserAppScreen(onThemeChanged: (String) -> Unit = {}) {
     }
 
     // Resolve or build WebView content for the current selected tab
+    // Pre-compute ad-blocking keywords once, not per-resource-request
+    val adKeywords = remember(adBlockerEnabled) {
+        if (adBlockerEnabled) {
+            listOf(
+                "googlesyndication.com", "googleads", "doubleclick.net", "adservice.google",
+                "adsystem", "popunder", "popads", "onclickads", "taboola", "outbrain",
+                "mgid.com", "scorecardresearch", "analytics.google", "googletagmanager.com",
+                "google-analytics.com", "cnzz.com", "51.la", "umeng.com", "umeng.co",
+                "hm.baidu.com", "pos.baidu.com", "cpro.baidustatic.com", "pstatp.com",
+                "tanx.com", "alimama.com"
+            )
+        } else emptyList()
+    }
+
     val currentActiveWebView = activeTab?.let { tab ->
-        webViewsMap.getOrPut(tab.id) {
+        // Check if existing WebView is still valid (not destroyed by memory guard)
+        val existing = webViewsMap[tab.id]
+        if (existing != null) {
+            // A destroyed WebView has no parent — detect and remove it
+            if (existing.parent == null) {
+                try {
+                    MainActivity.activeWebViewsPool.remove(existing)
+                } catch (_: Exception) {}
+                webViewsMap.remove(tab.id)
+                null
+            } else {
+                existing
+            }
+        } else {
+            null
+        } ?: webViewsMap.getOrPut(tab.id) {
             WebView(context).apply {
                 layoutParams = ViewGroup.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT,
@@ -523,9 +581,6 @@ fun BrowserAppScreen(onThemeChanged: (String) -> Unit = {}) {
                             if (newProgress >= 100) {
                                 isWebLoading = false
                             }
-                        }
-                        if (newProgress >= 10 && newProgress < 85) {
-                            view?.let { injectTtsBridgeScript(it) }
                         }
                     }
                 }
@@ -575,12 +630,17 @@ fun BrowserAppScreen(onThemeChanged: (String) -> Unit = {}) {
                         if (url != null) {
                             com.paras.novelreaderkt.WtrLogManager.log(context, "onPageFinished tab=${tab.id}: $url (title: ${view?.title})")
                         }
-                        if (viewModel.currentTab.value?.id == tab.id) {
+                        val isActiveTab = viewModel.currentTab.value?.id == tab.id
+                        val isTtsActiveTab = WtrAudioControlBridge.activeTtsTabId.value == tab.id && WtrAudioControlBridge.isAudiobookModeActive.value
+                        if (isActiveTab) {
                             isWebLoading = false
                             webProgress = 100
-                            if (url != null && view != null) {
-                                viewModel.onPageLoaded(url, view.title ?: "Wtr-Lab")
-                                // Directly trigger background logic bypassing Compose pauses!
+                        }
+                        if (url != null && view != null) {
+                            viewModel.onPageLoaded(url, view.title ?: "Wtr-Lab")
+                            // Trigger background logic for BOTH the visible tab AND the TTS-active tab
+                            // (they may differ when auto-next loads a chapter while app is in background)
+                            if (isActiveTab || isTtsActiveTab) {
                                 pageLoadBackgroundLogic(url, view)
                             }
                         }
@@ -641,14 +701,6 @@ fun BrowserAppScreen(onThemeChanged: (String) -> Unit = {}) {
                         if (url != null) {
                             if (adBlockerEnabled) {
                                 val urlLower = url.lowercase()
-                                val adKeywords = listOf(
-                                    "googlesyndication.com", "googleads", "doubleclick.net", "adservice.google",
-                                    "adsystem", "popunder", "popads", "onclickads", "taboola", "outbrain",
-                                    "mgid.com", "scorecardresearch", "analytics.google", "googletagmanager.com",
-                                    "google-analytics.com", "cnzz.com", "51.la", "umeng.com", "umeng.co",
-                                    "hm.baidu.com", "pos.baidu.com", "cpro.baidustatic.com", "pstatp.com",
-                                    "tanx.com", "alimama.com"
-                                )
                                 if (adKeywords.any { urlLower.contains(it) }) {
                                     return android.webkit.WebResourceResponse(
                                         "text/javascript", "UTF-8", java.io.ByteArrayInputStream(ByteArray(0))
@@ -656,16 +708,18 @@ fun BrowserAppScreen(onThemeChanged: (String) -> Unit = {}) {
                                 }
                             }
                             
-                            // High-performance static assets cache specifically for wtr-lab.com
+                            // High-performance static assets cache for wtr-lab.com
+                            // Uses a lightweight string hash instead of SHA-256 to avoid blocking the resource pipeline
                             if (url.contains("wtr-lab.com")) {
                                 val isStatic = url.contains(".js") || url.contains(".css") ||
                                         url.contains(".woff") || url.contains(".woff2") ||
                                         url.contains(".png") || url.contains(".jpg") || url.contains(".jpeg") || url.contains(".svg")
                                 if (isStatic) {
                                     try {
-                                        val messageDigest = java.security.MessageDigest.getInstance("SHA-256")
-                                        val hashBytes = messageDigest.digest(url.toByteArray(Charsets.UTF_8))
-                                        val safeFileName = hashBytes.joinToString("") { "%02x".format(it) }
+                                        // Fast djb2 hash — no MessageDigest overhead per resource
+                                        var hash = 5381
+                                        for (c in url) hash = hash * 33 + c.code
+                                        val safeFileName = String.format("%08x", hash.toInt())
                                         
                                         val cacheFolder = java.io.File(context.cacheDir, "wtr_static_cache")
                                         if (!cacheFolder.exists()) {
@@ -685,30 +739,35 @@ fun BrowserAppScreen(onThemeChanged: (String) -> Unit = {}) {
                                                 else -> "application/octet-stream"
                                             }
                                             com.paras.novelreaderkt.WtrLogManager.log(context, "⚡ Cache Hit for Wtr-Lab: $url -> Loaded from private storage")
+                                            val bytes = cacheFile.readBytes()
                                             return android.webkit.WebResourceResponse(
-                                                mimeType, "UTF-8", java.io.FileInputStream(cacheFile)
+                                                mimeType, "UTF-8", java.io.ByteArrayInputStream(bytes)
                                             )
                                         } else {
-                                            // Asynchronously prefetch so we don't block the WebView's resource loading pipeline
+                                            // Let WebView handle natively with its parallel HTTP stack.
+                                            // Return null so the default loader fetches the asset.
+                                            // Cache it for next time via a lightweight async prefetch.
                                             coroutineScope.launch(kotlinx.coroutines.Dispatchers.IO) {
-                                                var connection: java.net.HttpURLConnection? = null
                                                 try {
-                                                    connection = java.net.URL(url).openConnection() as java.net.HttpURLConnection
-                                                    connection.connectTimeout = 3000
-                                                    connection.readTimeout = 3000
-                                                    if (connection.responseCode == 200) {
-                                                        connection.inputStream.use { input ->
-                                                            val tempFile = java.io.File(cacheFolder, "$safeFileName.tmp")
-                                                            java.io.FileOutputStream(tempFile).use { output ->
-                                                                input.copyTo(output)
+                                                    val response = kotlinx.coroutines.withTimeout(5000L) {
+                                                        java.net.URL(url).openConnection().let { conn ->
+                                                            conn as java.net.HttpURLConnection
+                                                            conn.connectTimeout = 3000
+                                                            conn.readTimeout = 5000
+                                                            conn.connect()
+                                                            if (conn.responseCode == 200) {
+                                                                conn.inputStream.use { input ->
+                                                                    val tempFile = java.io.File(cacheFolder, "$safeFileName.tmp")
+                                                                    java.io.FileOutputStream(tempFile).use { output ->
+                                                                        input.copyTo(output)
+                                                                    }
+                                                                    tempFile.renameTo(cacheFile)
+                                                                }
                                                             }
-                                                            tempFile.renameTo(cacheFile)
                                                         }
                                                     }
                                                 } catch (e: Exception) {
-                                                    // Ignore background prefetch errors
-                                                } finally {
-                                                    try { connection?.disconnect() } catch (ignored: Exception) {}
+                                                    // Ignore — WebView already loaded it via default path
                                                 }
                                             }
                                             return null
@@ -755,7 +814,9 @@ fun BrowserAppScreen(onThemeChanged: (String) -> Unit = {}) {
 
                         if (isWebUrl && currentActive?.id == tab.id && triggeringTab?.id == tab.id && isWebViewMatchingActive && (currentActive.url != syncedUrl || currentActive.title != htmlTitle) && currentActive.url != "chrome://newtab") {
                             com.paras.novelreaderkt.WtrLogManager.log(context, "onUrlSynced matching tab ID=${tab.id} synchronized to: $syncedUrl (title: $htmlTitle)")
-                            coroutineScope.launch {
+                            // Use viewModelScope (tied to ViewModel lifecycle) instead of Compose coroutineScope
+                            // to prevent silent data loss after Compose recomposition
+                            viewModel.viewModelScope.launch {
                                 viewModel.onPageLoaded(syncedUrl, htmlTitle)
                             }
                         }
@@ -783,7 +844,7 @@ fun BrowserAppScreen(onThemeChanged: (String) -> Unit = {}) {
         }
     }
 
-    // Safely prune and destroy closed WebViews
+    // Safely prune and destroy closed WebViews, and cap total WebView count
     LaunchedEffect(tabsList) {
         val tabIds = tabsList.map { it.id }.toSet()
         val iterator = webViewsMap.iterator()
@@ -801,6 +862,25 @@ fun BrowserAppScreen(onThemeChanged: (String) -> Unit = {}) {
                     e.printStackTrace()
                 }
                 iterator.remove()
+            }
+        }
+        // Memory guard: destroy oldest non-active WebViews if we have too many
+        val maxWebViews = 10
+        val activeId = activeTab?.id
+        if (webViewsMap.size > maxWebViews) {
+            val toRemove = webViewsMap.entries
+                .filter { it.key != activeId }
+                .take(webViewsMap.size - maxWebViews)
+            for (entry in toRemove) {
+                val wv = entry.value
+                try {
+                    wv.stopLoading()
+                    wv.clearHistory()
+                    wv.removeAllViews()
+                    MainActivity.activeWebViewsPool.remove(wv)
+                    wv.destroy()
+                } catch (e: Exception) { e.printStackTrace() }
+                webViewsMap.remove(entry.key)
             }
         }
     }
@@ -1037,7 +1117,10 @@ fun BrowserAppScreen(onThemeChanged: (String) -> Unit = {}) {
     // Reduced TTS latency and adaptive HTML readers extraction methods
     // Reduced TTS latency and adaptive HTML readers extraction methods
     val runHtmlTextExtractionAndPlay: () -> Unit = {
-        val webView = currentActiveWebView
+        // Use the TTS-active tab's WebView if available, otherwise the visible tab's WebView.
+        // This ensures extraction works when the app is in background (TTS tab may not be visible).
+        val ttsTabId = WtrAudioControlBridge.activeTtsTabId.value
+        val webView = ttsTabId?.let { webViewsMap[it] } ?: currentActiveWebView
         if (webView != null && !isExtracting) {
             isExtracting = true
             viewModel.viewModelScope.launch(Dispatchers.Main) {
@@ -1481,6 +1564,26 @@ fun BrowserAppScreen(onThemeChanged: (String) -> Unit = {}) {
 
     runHtmlTextExtractionAndPlayRef = runHtmlTextExtractionAndPlay
 
+    // Register background-safe callbacks for the native next chapter handler
+    // These allow the foreground service to load URLs and trigger extraction without WebView-JS
+    LaunchedEffect(Unit) {
+        WtrAudioControlBridge.onLoadUrlInWebView = { url ->
+            // Load URL in the TTS-active tab's WebView (not necessarily the visible tab)
+            val ttsTabId = WtrAudioControlBridge.activeTtsTabId.value
+            val targetWebView = if (ttsTabId != null) webViewsMap[ttsTabId] else currentActiveWebView
+            if (targetWebView != null) {
+                com.paras.novelreaderkt.WtrLogManager.log(context, "onLoadUrlInWebView: loading $url in tab $ttsTabId")
+                targetWebView.post { targetWebView.loadUrl(url) }
+            } else {
+                com.paras.novelreaderkt.WtrLogManager.log(context, "onLoadUrlInWebView: no WebView found for tab $ttsTabId!")
+            }
+        }
+        WtrAudioControlBridge.onManualExtractAndPlay = {
+            com.paras.novelreaderkt.WtrLogManager.log(context, "onManualExtractAndPlay: triggering fallback extraction")
+            runHtmlTextExtractionAndPlayRef?.invoke()
+        }
+    }
+
     val triggerNextChapterNavigation: () -> Unit = {
         val webView = currentActiveWebView
         if (webView != null) {
@@ -1910,19 +2013,12 @@ fun BrowserAppScreen(onThemeChanged: (String) -> Unit = {}) {
     }
 
     // Register decoupled background-safe callbacks
+    // nextChapterAction is now primarily used as a fallback — the service calls WtrNextChapterHandler directly.
+    // This registration is kept for any edge case where the old code path is still invoked.
     LaunchedEffect(antiCaptchaDelay) {
         WtrAudioControlBridge.nextChapterAction = {
-            val currentUrl = viewModel.currentTab.value?.url ?: ""
-            val isTranslated = currentUrl.contains("translate.goog") || currentUrl.contains("translate.google")
-            if (isTranslated && antiCaptchaDelay) {
-                com.paras.novelreaderkt.WtrLogManager.log(context, "Anti-CAPTCHA Delay: Pausing 4.5s before loading next translated chapter.")
-                android.widget.Toast.makeText(context, "Auto-Next: Pausing 4.5s to bypass Google CAPTCHA filters...", android.widget.Toast.LENGTH_SHORT).show()
-                android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
-                    currentTriggerNextChapter()
-                }, 4500)
-            } else {
-                currentTriggerNextChapter()
-            }
+            // Delegate to the native handler which works in background
+            com.paras.novelreaderkt.WtrNextChapterHandler.handleNativeNextChapter()
         }
     }
 
@@ -2204,8 +2300,9 @@ fun BrowserAppScreen(onThemeChanged: (String) -> Unit = {}) {
         modifier = Modifier.fillMaxSize(),
         topBar = {
             Surface(
-                tonalElevation = 6.dp,
-                shadowElevation = 3.dp,
+                color = MaterialTheme.colorScheme.surface.copy(alpha = 0.88f),
+                tonalElevation = 2.dp,
+                shadowElevation = 0.dp,
                 modifier = Modifier.statusBarsPadding()
             ) {
                 Column(modifier = Modifier.fillMaxWidth()) {
@@ -2214,7 +2311,7 @@ fun BrowserAppScreen(onThemeChanged: (String) -> Unit = {}) {
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(horizontal = 12.dp, vertical = 8.dp)
+                            .padding(horizontal = 10.dp, vertical = 6.dp)
                     ) {
                         // URL Search pill styled exactly like Google Chrome with zero text clipping
                         val isHttps = urlText.startsWith("https://") || urlInput.startsWith("https://")
@@ -2247,9 +2344,17 @@ fun BrowserAppScreen(onThemeChanged: (String) -> Unit = {}) {
                                 .weight(1f)
                                 .height(40.dp)
                                 .background(
-                                    MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                                    MaterialTheme.colorScheme.surfaceContainerLow,
                                     RoundedCornerShape(20.dp)
-                                  )
+                                )
+                                .border(
+                                    width = 1.dp,
+                                    color = if (isSearchFocused)
+                                        MaterialTheme.colorScheme.primary.copy(alpha = 0.5f)
+                                    else
+                                        MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f),
+                                    shape = RoundedCornerShape(20.dp)
+                                )
                                 .padding(horizontal = 12.dp),
                             decorationBox = { innerTextField ->
                                 Row(
@@ -2683,12 +2788,16 @@ fun BrowserAppScreen(onThemeChanged: (String) -> Unit = {}) {
                         }
                     }
 
-                    // Loading progress indicator
+                    // Loading progress indicator — thin 3px track with primary color
                     if (isWebLoading && webProgress < 100) {
                         LinearProgressIndicator(
                             progress = { webProgress / 100f },
-                            modifier = Modifier.fillMaxWidth(),
-                            color = MaterialTheme.colorScheme.primary
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(3.dp),
+                            color = MaterialTheme.colorScheme.primary,
+                            trackColor = Color.Transparent,
+                            strokeCap = androidx.compose.ui.graphics.StrokeCap.Round
                         )
                     }
                 }
@@ -2753,15 +2862,15 @@ fun BrowserAppScreen(onThemeChanged: (String) -> Unit = {}) {
                     modifier = Modifier
                         .fillMaxWidth()
                         .align(Alignment.BottomCenter)
-                        .padding(16.dp)
+                        .padding(horizontal = 12.dp, vertical = 10.dp)
                 ) {
                     if (playTrackInputList.isEmpty()) {
                         Card(
                             colors = CardDefaults.cardColors(
-                                containerColor = MaterialTheme.colorScheme.primaryContainer
+                                containerColor = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.92f)
                             ),
-                            shape = RoundedCornerShape(16.dp),
-                            elevation = CardDefaults.cardElevation(defaultElevation = 6.dp),
+                            shape = RoundedCornerShape(20.dp),
+                            elevation = CardDefaults.cardElevation(defaultElevation = 4.dp),
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .height(64.dp)
@@ -2779,22 +2888,22 @@ fun BrowserAppScreen(onThemeChanged: (String) -> Unit = {}) {
                                     modifier = Modifier.weight(1f)
                                 ) {
                                     Icon(
-                                        imageVector = Icons.Default.PlayArrow,
+                                        imageVector = Icons.Default.Headphones,
                                         contentDescription = null,
-                                        tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                                        tint = MaterialTheme.colorScheme.primary,
                                         modifier = Modifier.size(22.dp)
                                     )
                                     Column {
                                         Text(
                                             text = "Listen to Webpage",
-                                            fontWeight = FontWeight.Bold,
+                                            fontWeight = FontWeight.SemiBold,
                                             fontSize = 14.sp,
-                                            color = MaterialTheme.colorScheme.onPrimaryContainer
+                                            color = MaterialTheme.colorScheme.onSurface
                                         )
                                         Text(
                                             text = "Let the TTS engine read the text content of this page aloud.",
                                             fontSize = 11.sp,
-                                            color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.8f),
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
                                             maxLines = 1,
                                             overflow = TextOverflow.Ellipsis
                                         )
@@ -2810,7 +2919,8 @@ fun BrowserAppScreen(onThemeChanged: (String) -> Unit = {}) {
                                         containerColor = MaterialTheme.colorScheme.primary,
                                         contentColor = MaterialTheme.colorScheme.onPrimary
                                     ),
-                                    contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp),
+                                    shape = RoundedCornerShape(20.dp),
+                                    contentPadding = PaddingValues(horizontal = 16.dp, vertical = 6.dp),
                                     enabled = !isExtracting,
                                     modifier = Modifier.height(36.dp)
                                 ) {
@@ -2830,11 +2940,14 @@ fun BrowserAppScreen(onThemeChanged: (String) -> Unit = {}) {
                         // Playback Tracker Panel Control
                         Card(
                             colors = CardDefaults.cardColors(
-                                containerColor = MaterialTheme.colorScheme.secondaryContainer
+                                containerColor = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.95f)
                             ),
-                            shape = RoundedCornerShape(16.dp),
-                            elevation = CardDefaults.cardElevation(defaultElevation = 8.dp),
-                            border = androidx.compose.foundation.BorderStroke(1.5.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.5f)),
+                            shape = RoundedCornerShape(20.dp),
+                            elevation = CardDefaults.cardElevation(defaultElevation = 6.dp),
+                            border = androidx.compose.foundation.BorderStroke(
+                                1.dp,
+                                MaterialTheme.colorScheme.primary.copy(alpha = 0.25f)
+                            ),
                             modifier = Modifier.fillMaxWidth()
                         ) {
                             Column(
@@ -3380,35 +3493,22 @@ private fun cleanUrlForTts(url: String): String {
 private fun extractNovelAndChapter(title: String, url: String): Pair<String, String> {
     if (title.isEmpty()) return Pair("Wtr-Lab Browser", "Web Chapter")
     
+    // Strip site-specific suffixes in one pass instead of 20+ separate replace calls
+    val siteSuffixes = listOf(
+        " - NovelHall", " - Read Novel Free", " - WebNovel", " - NovelBin", 
+        " - FreeWebNovel", " - FanMTL", " - timotxt", " - novel543", 
+        " - twkan", " - NovelHub", " - NovelHubApp", " online free", " read online",
+        "_timotxt", "_timotxt.com", "_novelhall.com", "_novel543.com",
+        "_twkan.com", "_novelhub.net", "_novelhubapp.com",
+        " - timotxt.com", " - novelhall.com", " - novel543.com",
+        " - twkan.com", " - novelhub.net", " - novelhubapp.com"
+    )
     var cleanTitle = title
-        .replace(" - NovelHall", "", ignoreCase = true)
-        .replace(" - Read Novel Free", "", ignoreCase = true)
-        .replace(" - WebNovel", "", ignoreCase = true)
-        .replace(" - NovelBin", "", ignoreCase = true)
-        .replace(" - FreeWebNovel", "", ignoreCase = true)
-        .replace(" - FanMTL", "", ignoreCase = true)
-        .replace(" - timotxt", "", ignoreCase = true)
-        .replace(" - novel543", "", ignoreCase = true)
-        .replace(" - twkan", "", ignoreCase = true)
-        .replace(" - NovelHub", "", ignoreCase = true)
-        .replace(" - NovelHubApp", "", ignoreCase = true)
-        .replace(" online free", "", ignoreCase = true)
-        .replace(" read online", "", ignoreCase = true)
-        .replace("_timotxt", "", ignoreCase = true)
-        .replace("_timotxt.com", "", ignoreCase = true)
-        .replace("_novelhall.com", "", ignoreCase = true)
-        .replace("_novel543.com", "", ignoreCase = true)
-        .replace("_twkan.com", "", ignoreCase = true)
-        .replace("_novelhub.net", "", ignoreCase = true)
-        .replace("_novelhubapp.com", "", ignoreCase = true)
-        .replace(" - timotxt.com", "", ignoreCase = true)
-        .replace(" - novelhall.com", "", ignoreCase = true)
-        .replace(" - novel543.com", "", ignoreCase = true)
-        .replace(" - twkan.com", "", ignoreCase = true)
-        .replace(" - novelhub.net", "", ignoreCase = true)
-        .replace(" - novelhubapp.com", "", ignoreCase = true)
-        .replace(Regex("""_\d+\.html"""), ".html")
-        .trim()
+    for (suffix in siteSuffixes) {
+        val idx = cleanTitle.indexOf(suffix, ignoreCase = true)
+        if (idx >= 0) cleanTitle = cleanTitle.removeRange(idx, idx + suffix.length)
+    }
+    cleanTitle = cleanTitle.replace(Regex("""_\d+\.html"""), ".html").trim()
         
     if (cleanTitle.startsWith("《") && cleanTitle.endsWith("》")) {
         cleanTitle = cleanTitle.substring(1, cleanTitle.length - 1).trim()

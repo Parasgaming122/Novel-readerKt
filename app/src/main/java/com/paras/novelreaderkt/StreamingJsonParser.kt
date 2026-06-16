@@ -121,8 +121,8 @@ object StreamingJsonParser {
         reader.beginObject()
         while (reader.hasNext()) {
             when (reader.nextName()) {
-                "url" -> url = reader.nextString()
-                "title" -> title = reader.nextString()
+                "url" -> url = reader.nextString().take(2048)
+                "title" -> title = reader.nextString().take(512)
                 "timestamp" -> timestamp = reader.nextLong()
                 else -> reader.skipValue()
             }
@@ -147,8 +147,8 @@ object StreamingJsonParser {
         reader.beginObject()
         while (reader.hasNext()) {
             when (reader.nextName()) {
-                "url" -> url = reader.nextString()
-                "title" -> title = reader.nextString()
+                "url" -> url = reader.nextString().take(2048)
+                "title" -> title = reader.nextString().take(512)
                 "timestamp" -> timestamp = reader.nextLong()
                 "isNovel" -> isNovel = reader.nextBoolean()
                 "novelTitle" -> {
@@ -223,8 +223,8 @@ object StreamingJsonParser {
         reader.beginObject()
         while (reader.hasNext()) {
             when (reader.nextName()) {
-                "url" -> url = reader.nextString()
-                "title" -> title = reader.nextString()
+                "url" -> url = reader.nextString().take(2048)
+                "title" -> title = reader.nextString().take(512)
                 "isCurrent" -> isCurrent = reader.nextBoolean()
                 "isDesktopMode" -> isDesktopMode = reader.nextBoolean()
                 "groupId" -> {

@@ -88,7 +88,7 @@ The polyfill is critical. It overrides standard Web Speech API bindings so that 
 
 ### Periodic Polling
 
-A 500ms polling interval ensures that even if sites use non-standard play/pause configurations, the native bridge is updated:
+A 1500ms polling interval ensures that even if sites use non-standard play/pause configurations, the native bridge is updated:
 - Automatically extracts novel cover image, title, and paragraph nodes via DOM queries (`WebsiteSupport`).
 - Sends parsed metadata to `WtrBridge.syncMetadata()` for updating bookmark models.
 - If audio elements are playing, synchronization state is pushed to `postPlaybackState()`.
@@ -166,10 +166,50 @@ Is Website TrackPlayer enabled in Settings?
         │
         ▼
 6. Last paragraph finished:
-   - calls triggerNextChapter()
-   - WebView navigates to next page
+   - calls `WtrNextChapterHandler.handleNativeNextChapter()` (background-safe)
+   - Handler resolves next chapter URL via pure HTTP (no WebView JS)
+   - Applies Google Translate proxy if needed
+   - Loads URL in TTS-active tab's WebView via `onLoadUrlInWebView` callback
+   - `onPageFinished` fires → `pageLoadBackgroundLogic` → extract → play
    - Cycle repeats automatically ✓
 ```
+
+### Native Background-Safe Auto-Next (v4)
+
+Starting from v4, the auto-next chapter flow no longer depends on WebView JavaScript when the app may be backgrounded. The old `triggerNextChapterNavigation` (which used `webView.evaluateJavascript()` to click buttons) is replaced by `WtrNextChapterHandler.handleNativeNextChapter()` for automatic advances:
+
+```
+Last paragraph onDone (WtrBrowserService)
+    │
+    ▼
+WtrNextChapterHandler.handleNativeNextChapter()
+    │
+    ├─ Read settings from SharedPreferences via WtrAudioControlBridge.lastKnownContext
+    │
+    ├─ WtrChapterUrlResolver.resolveNextChapterUrl()  [IO thread, HttpURLConnection]
+    │     ├─ Fetch current page HTML
+    │     ├─ Parse <a> tags for next-chapter link
+    │     │   ├─ Site-specific: timotxt → "下一章", webnovel → book/N patterns
+    │     │   ├─ Generic: .btn-next, .next-chapter classes
+    │     │   └─ Fallback: numeric chapter-N → chapter-(N+1)
+    │     └─ Return next chapter URL
+    │
+    ├─ Apply Google Translate proxy if needed (getProxyTranslatedUrl)
+    │
+    ├─ Anti-CAPTCHA delay (4.5s) if translating
+    │
+    ├─ WtrAudioControlBridge.onLoadUrlInWebView(url)
+    │     └─ Loads URL in the TTS-active tab's WebView (may not be visible)
+    │
+    └─ Poll for extraction completion (up to 25s)
+         ├─ Success: playTrackInputList populated, isPlayerRunning = true
+         └─ Timeout: trigger fallback via onManualExtractAndPlay
+```
+
+This ensures seamless background chapter transitions even when:
+- The screen is off (WebView JS is throttled)
+- The app is in the background (Compose `LaunchedEffect` is paused)
+- Google Translate needs to load the page
 
 ### Invariants: Track Cap
 

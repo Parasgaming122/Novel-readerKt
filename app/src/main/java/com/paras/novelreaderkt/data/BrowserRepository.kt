@@ -59,19 +59,12 @@ class BrowserRepository(private val browserDao: BrowserDao) {
         val cleanTitle = title.trim()
 
         historyMutex.withLock {
-            val historyList = try {
-                browserDao.getAllHistoryList()
+            // Use targeted query instead of loading entire table
+            val existing = try {
+                browserDao.getHistoryByUrl(normalizedInputUrl)
+                    ?: if (cleanTitle.length > 3) browserDao.getHistoryByUrlOrTitle(normalizedInputUrl, cleanTitle) else null
             } catch (e: Exception) {
-                emptyList()
-            }
-
-            val existing = historyList.firstOrNull { entry ->
-                normalizeUrl(entry.url) == normalizedInputUrl || (
-                    cleanTitle.isNotEmpty() &&
-                    cleanTitle.length > 3 &&
-                    entry.title.trim().equals(cleanTitle, ignoreCase = true) &&
-                    getHost(entry.url) == inputHost
-                )
+                null
             }
 
             if (existing != null) {
@@ -94,10 +87,14 @@ class BrowserRepository(private val browserDao: BrowserDao) {
                 browserDao.insertHistory(HistoryEntry(url = url, title = title))
             }
         }
+        // Only prune when we actually exceed the limit — avoids wasted DELETE on every page load
         try {
-            browserDao.pruneHistory(500)
+            val count = browserDao.getHistoryCount()
+            if (count > 500) {
+                browserDao.pruneHistoryOffset(500)
+            }
         } catch (e: Exception) {
-            e.printStackTrace()
+            try { browserDao.pruneHistory(500) } catch (e2: Exception) { e2.printStackTrace() }
         }
     }
 
@@ -137,10 +134,8 @@ class BrowserRepository(private val browserDao: BrowserDao) {
 
     suspend fun updateNovelMetadata(url: String, novelTitle: String, chapterTitle: String, coverImage: String) {
         val host = try { Uri.parse(url).host?.replace("www.", "")?.replace("translate.goog", "")?.trim('.') ?: "" } catch (e: Exception) { "" }
-        val allNovels = browserDao.getAllNovelBookmarks()
-        val existingNovelBookmark = allNovels.firstOrNull { bkmk ->
-            bkmk.domain == host && (bkmk.novelTitle == novelTitle || bkmk.url == url)
-        }
+        // Use targeted query instead of loading ALL novel bookmarks
+        val existingNovelBookmark = browserDao.getNovelBookmarkByHostAndTitle(host, novelTitle, url)
         
         if (existingNovelBookmark != null) {
             val updated = existingNovelBookmark.copy(
@@ -167,11 +162,8 @@ class BrowserRepository(private val browserDao: BrowserDao) {
                 val urlPrefix = if (uriSegments.isNotEmpty()) uriSegments.firstOrNull() ?: "" else ""
 
                 if (host.isNotEmpty()) {
-                    val allNovels = browserDao.getAllNovelBookmarks()
-                    existingNovelBookmark = allNovels.firstOrNull { bkmk ->
-                        val safeNovelTitle = bkmk.novelTitle ?: ""
-                        bkmk.domain == host && (bkmk.url.contains(urlPrefix) || (safeNovelTitle.isNotEmpty() && url.contains(safeNovelTitle.take(5))) || bkmk.url == url)
-                    }
+                    // Use targeted query instead of loading ALL novel bookmarks
+                    existingNovelBookmark = browserDao.getNovelBookmarkByHost(host, urlPrefix, novelTitleVal.take(5), url)
                 }
             }
 

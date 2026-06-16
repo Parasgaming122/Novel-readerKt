@@ -1,6 +1,6 @@
 # Novel Reader - Complete Fixes Log
 
-All 29 resolved issues documented with severity, affected files, root cause
+All 30 resolved issues documented with severity, affected files, root cause
 analysis, and implementation details.
 
 ---
@@ -285,21 +285,18 @@ val isWebViewMatchingActive = wvUrl.isNotEmpty()
     && isSameBaseOrTranslatedUrl(wvUrl, currentActive?.url ?: "")
 ```
 
-### Issue 29: Cross-tab navigation leaks
+### Issue 30: Background auto-next chapter — translation doesn't load, TTS reads in Chinese
 
-- **Severity:** High
-- **Files:** `BrowserAppScreen.kt`, `BrowserViewModel.kt`
-- **Pre-fix state:** Long-pressing a link and choosing "Open in new tab"
-  loaded the link in BOTH the new tab and the active tab, because Compose's
-  global `activeTab` state updated before the old `AndroidView` was disposed.
-  The back button also exited the app instead of closing tabs.
-- **Solution:** (1) Stored a local snapshot `val tabForView = activeTab!!`
-  before the `key(tabForView.id)` declaration. The `AndroidView` factory and
-  update blocks reference `tabForView` instead of the mutable global state,
-  isolating each WebView to its own tab. (2) Established
-  `tabNavigationHistory` in `BrowserViewModel.kt` and configured
-  `BackHandler` to close the current tab and return to the previously active
-  tab, only exiting when no tabs remain.
+- **Severity:** Critical
+- **Files:** `BrowserAppScreen.kt`, `WtrBrowserService.kt`, `WtrAudioControlBridge.kt`
+- **Pre-fix state:** When the last paragraph of a chapter finished during audiobook mode and the app was backgrounded or the screen was off, the entire auto-next chapter flow depended on WebView JavaScript. Specifically: (a) `triggerNextChapterNavigation` used `webView.evaluateJavascript()` to find and click the "下一章" button — but Android throttles WebView JS execution when the app is not visible. (b) Google Translate redirect relied on `shouldOverrideUrlLoading` WebView intercept — also throttled in background. (c) The translation completion check in `pageLoadBackgroundLogic` polled `viewModel.currentTab.value?.url` which is Compose state — frozen when Compose is paused. (d) Paragraph extraction used `webView.evaluateJavascript()` — also throttled. The net result was that TTS would eventually start reading from the raw Chinese page because the translation never loaded, and `runHtmlTextExtractionAndPlay` extracted untranslated content. Additionally, `onPageFinished` only triggered `pageLoadBackgroundLogic` for the currently visible tab, so background chapter loads in the TTS tab got no extraction at all.
+- **Solution:** Created a completely background-safe auto-next chapter pipeline:
+  1. **`WtrChapterUrlResolver.kt` (NEW, 235 lines):** Pure Kotlin HTTP-based next chapter URL resolver. Fetches the current page's HTML via `HttpURLConnection` on an IO thread, parses `<a>` tags to find "下一章"/"Next Chapter" links by CSS class/ID or text content keywords. Falls back to numeric chapter increment (e.g., `chapter-5` → `chapter-6`) or `_N.html` pattern increment for CN novel sites. No WebView dependency whatsoever — works entirely from the foreground service.
+  2. **`WtrNextChapterHandler.kt` (NEW, 160 lines):** Orchestrates the entire background next-chapter flow inside the foreground service's coroutine scope. Resolves the next chapter URL via `WtrChapterUrlResolver`, applies Google Translate proxy via `getProxyTranslatedUrl()` if auto-translate is enabled, handles anti-CAPTCHA delay (4.5s wait for translated pages), loads the URL in the TTS-active tab's WebView via the `onLoadUrlInWebView` callback, and polls for paragraph extraction completion with a 25-second timeout. If extraction doesn't complete, triggers a fallback via `onManualExtractAndPlay`.
+  3. **`WtrBrowserService.kt`:** `onDone()` in both `setupTtsUtteranceListener` and `handleNextTrack` now calls `WtrNextChapterHandler.handleNativeNextChapter()` instead of `WtrAudioControlBridge.triggerNextChapter()`. Service initializes the handler with its `serviceScope` in `onCreate` and cancels it in `onDestroy`.
+  4. **`WtrAudioControlBridge.kt`:** Added three new fields: `onLoadUrlInWebView` (callback to load a URL in the correct tab's WebView from the service), `onManualExtractAndPlay` (callback to trigger paragraph extraction as a fallback), and `lastKnownContext` (Context reference for background SharedPreferences access).
+  5. **`BrowserAppScreen.kt`:** Four critical changes: (a) `onPageFinished` now triggers `pageLoadBackgroundLogic` for both the visible active tab AND the TTS-active tab — this ensures background chapter loads still get extraction and playback. (b) `pageLoadBackgroundLogic` was rewritten to properly handle three cases: untranslated pages needing redirect, `translate.goog` pages (with an 800ms settle delay for Google's in-page translation), and regular pages. (c) `runHtmlTextExtractionAndPlay` now uses the TTS-active tab's WebView instead of the visible tab's WebView. (d) Registered `onLoadUrlInWebView` and `onManualExtractAndPlay` callbacks.
+- **Impact:** Auto-next chapter now works seamlessly with the screen off or app backgrounded. Google Translate content loads correctly every time. TTS reads in the target language instead of falling back to Chinese.
 
 ---
 

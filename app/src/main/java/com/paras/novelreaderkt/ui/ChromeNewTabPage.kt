@@ -68,7 +68,7 @@ fun ChromeNewTabPage(
                 Box(
                     modifier = Modifier
                         .size(48.dp)
-                        .clip(RoundedCornerShape(12.dp))
+                        .clip(RoundedCornerShape(14.dp))
                         .background(MaterialTheme.colorScheme.primaryContainer),
                     contentAlignment = Alignment.Center
                 ) {
@@ -76,15 +76,15 @@ fun ChromeNewTabPage(
                         imageVector = Icons.Default.Book,
                         contentDescription = "Novel Reader",
                         tint = MaterialTheme.colorScheme.onPrimaryContainer,
-                        modifier = Modifier.size(28.dp)
+                        modifier = Modifier.size(26.dp)
                     )
                 }
                 Text(
                     text = "Novel Reader",
-                    fontWeight = FontWeight.Bold,
-                    fontSize = 28.sp,
+                    fontWeight = FontWeight.ExtraBold,
+                    fontSize = 26.sp,
                     color = MaterialTheme.colorScheme.onSurface,
-                    letterSpacing = (-1).sp
+                    letterSpacing = (-0.5).sp
                 )
             }
 
@@ -120,9 +120,9 @@ fun ChromeNewTabPage(
                 ),
                 colors = OutlinedTextFieldDefaults.colors(
                     focusedBorderColor = MaterialTheme.colorScheme.primary,
-                    unfocusedBorderColor = MaterialTheme.colorScheme.outline.copy(alpha = 0.5f),
-                    focusedContainerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f),
-                    unfocusedContainerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f)
+                    unfocusedBorderColor = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f),
+                    focusedContainerColor = MaterialTheme.colorScheme.surfaceContainerLow,
+                    unfocusedContainerColor = MaterialTheme.colorScheme.surfaceContainerLow
                 ),
                 modifier = Modifier
                     .fillMaxWidth()
@@ -142,18 +142,20 @@ fun ChromeNewTabPage(
                     imageVector = Icons.Default.Star,
                     contentDescription = null,
                     tint = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier.size(18.dp)
+                    modifier = Modifier.size(16.dp)
                 )
                 Text(
                     text = "Featured Directory",
                     fontWeight = FontWeight.Bold,
-                    fontSize = 14.sp,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                    fontSize = 13.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    letterSpacing = 0.5.sp
                 )
             }
 
             // Featured Grid
-            val shortcuts = listOf(
+            val shortcuts = remember {
+                listOf(
                 ShortcutItem(
                     title = "Wtr-Lab",
                     subtitle = "Main Reader Engine",
@@ -221,7 +223,7 @@ fun ChromeNewTabPage(
                     url = "https://novelhubapp.com/",
                     color = Color(0xFF673AB7) // Deep Purple
                 )
-            )
+            )}
 
             Column(
                 verticalArrangement = Arrangement.spacedBy(12.dp),
@@ -232,11 +234,11 @@ fun ChromeNewTabPage(
                 Card(
                     onClick = { onNavigate(mainSite.url) },
                     colors = CardDefaults.cardColors(
-                        containerColor = MaterialTheme.colorScheme.primaryContainer
+                        containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.7f)
                     ),
-                    shape = RoundedCornerShape(16.dp),
-                    elevation = CardDefaults.cardElevation(defaultElevation = 4.dp),
-                    border = BorderStroke(2.dp, MaterialTheme.colorScheme.primary),
+                    shape = RoundedCornerShape(18.dp),
+                    elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
+                    border = BorderStroke(1.5.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.6f)),
                     modifier = Modifier
                         .fillMaxWidth()
                         .testTag("featured_wtr_lab_card")
@@ -309,9 +311,9 @@ fun ChromeNewTabPage(
                     otherSitelist.forEach { site ->
                         Card(
                             onClick = { onNavigate(site.url) },
-                            shape = RoundedCornerShape(12.dp),
+                            shape = RoundedCornerShape(14.dp),
                             colors = CardDefaults.cardColors(
-                                containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f)
+                                containerColor = MaterialTheme.colorScheme.surfaceContainerLow
                             ),
                             modifier = Modifier
                                 .fillMaxWidth()

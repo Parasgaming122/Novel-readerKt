@@ -11,13 +11,13 @@
 |---|---|
 | **Name** | Novel Reader (Wtr-Lab Browser) |
 | **Type** | Single-module Android app (Jetpack Compose + WebView + TTS) |
-| **App ID** | `com.paras.novelreader` |
-| **Package** | `com.example` |
+| **App ID** | `com.paras.novelreaderkt` |
+| **Package** | `com.paras.novelreaderkt` |
 | **Min SDK** | 24 (Android 7.0) |
 | **Target SDK** | 36 |
-| **Namespace** | `com.example` |
+| **Namespace** | `com.paras.novelreaderkt` |
 
-> **DO NOT refactor the `com.example` package to `com.paras.novelreader`.** ProGuard keep rules, `-keepattributes` annotations, and the `namespace` in `build.gradle.kts` all reference `com.example`. Changing the package breaks release builds silently.
+> **DO NOT refactor the `com.paras.novelreaderkt` package back to `com.example`.** ProGuard keep rules, `-keepattributes` annotations, and the `namespace` in `build.gradle.kts` all reference `com.paras.novelreaderkt`. Changing the package breaks release builds silently.
 
 ---
 
@@ -252,16 +252,41 @@ val isTranslateTarget = currentGeminiTranslateEnabled
 
 NEVER use Compose `LaunchedEffect` for background page operations — it fires too early (before DOM is ready) and **pauses when the app is backgrounded**, stalling auto-advance TTS and translation.
 
-```kotlin
-// BrowserAppScreen.kt line 1476-1478:
-// "Removed LaunchedEffect(...) and Gemini translation effects
-//  because they fail in the background when the Compose View is suspended.
-//  They are now manually triggered via pageLoadBackgroundLogic inside onPageFinished!"
-```
-
 `onPageFinished` is the ONLY reliable signal that DOM is ready. Launch coroutines via `viewModelScope.launch(Dispatchers.Main)` from inside the callback.
 
-### Rule 13: Dynamic Language-Switching TTS Stalls
+Additionally, `onPageFinished` checks **both** the active tab AND the TTS-active tab:
+
+```kotlin
+val isActiveTab = viewModel.currentTab.value?.id == tab.id
+val isTtsActiveTab = WtrAudioControlBridge.activeTtsTabId.value == tab.id && WtrAudioControlBridge.isAudiobookModeActive.value
+if (isActiveTab || isTtsActiveTab) {
+    pageLoadBackgroundLogic(url, view)
+}
+```
+
+This ensures background chapter loads (triggered by the native next chapter handler) still get extraction + playback even when the tab is not visible.
+
+### Rule 13: CRITICAL — Background-Safe Auto-Next Chapter
+
+**Auto-next chapter MUST NOT depend on WebView JavaScript when the app may be backgrounded.**
+
+When the last paragraph finishes in audiobook mode, the service calls `WtrNextChapterHandler.handleNativeNextChapter()` — NOT the old WebView-JS-based `triggerNextChapterNavigation`. The native handler:
+
+1. Resolves the next chapter URL via `WtrChapterUrlResolver` (pure HTTP, `HttpURLConnection` on IO thread — no WebView needed)
+2. Applies Google Translate proxy if auto-translate is enabled
+3. Handles anti-CAPTCHA delay (4.5s wait for translated pages)
+4. Loads the URL in the TTS-active tab's WebView via `WtrAudioControlBridge.onLoadUrlInWebView` callback
+5. Polls for page load + paragraph extraction completion (25s timeout)
+6. Triggers fallback extraction if `onPageFinished` didn't fire
+
+The old WebView-JS path (`triggerNextChapterNavigation`) is kept in the codebase for manual use but is never called during auto-advance.
+
+Key files:
+- `WtrChapterUrlResolver.kt` — HTML parsing, next-link resolution, numeric URL increment
+- `WtrNextChapterHandler.kt` — Orchestration in the foreground service's coroutine scope
+- `WtrAudioControlBridge.onLoadUrlInWebView` — Callback to load URL in the correct WebView
+
+### Rule 14: Dynamic Language-Switching TTS Stalls
 
 `WtrBrowserService.isPlaylistPrimarilyEnglish()` samples first 15 paragraphs to decide language:
 
@@ -278,7 +303,7 @@ private fun isPlaylistPrimarilyEnglish(): Boolean {
 
 Prevents expensive 5-second TTS engine re-initialization on stray foreign lines in otherwise-English chapters.
 
-### Rule 14: Multi-Tab Navigation Isolation
+### Rule 15: Multi-Tab Navigation Isolation
 
 Each tab has independent back/forward navigation via `tabNavigationHistory` (MRU list in `BrowserViewModel`):
 
@@ -300,7 +325,7 @@ fun handleBackNavigation(onFinish: () -> Unit) {
 
 Tab switching uses local snapshot references (`val tabForView = activeTab!!`) inside the `AndroidView` update block to prevent the outgoing WebView from navigating to the incoming URL.
 
-### Rule 15: Secure Storage for Sensitive Credentials (API Keys)
+### Rule 16: Secure Storage for Sensitive Credentials (API Keys)
 
 **Sensitive fields like `gemini_api_key` MUST store their values using `SecurePreferences` with hardware/keystore-backed `EncryptedSharedPreferences`.**
 
@@ -320,11 +345,13 @@ Tab switching uses local snapshot references (`val tabForView = activeTab!!`) in
 | `MainActivity.kt` | 117 | Entry point. `CrashReportManager.init()`, `WtrLogManager.initialize()`, starts `WtrBrowserService` as foreground service. Holds `activeWebViewsPool` (synchronized list). Contains `getProxyTranslatedUrl()`. |
 | `BrowserViewModel.kt` | 605 | Core ViewModel. Tab CRUD, history recording, bookmark toggle, URL cleaning/search resolution, backup export/import (streaming + encrypted), `handleBackNavigation()` with MRU, `tabNavigationHistory`, `userNavigateTrigger` SharedFlow. |
 | `WtrBrowserService.kt` | 900 | Foreground service. `MediaSession`, `WakeLock`, `WifiLock`, `TextToSpeech` engine. Notification with 1.5s throttle gate. `isPlaylistPrimarilyEnglish()`, `detectLanguageTag()`, paragraph queue management, `onStartCommand`/`onBind` lifecycle. |
-| `WtrAudioControlBridge.kt` | 224 | Singleton object. All TTS state: `isPlaying`, `title`, `subtitle`, `ttsSpeed`, `ttsPitch`, `activeTtsTabId`, `currentlyActiveTabId`, `playTrackInputList` (cap 300), `webSpeakNativeFallbackList` (cap 300), `isPlayerRunning`, `isAudiobookModeActive`. Callback routing between WebView ↔ notification/lockscreen. |
+| `WtrAudioControlBridge.kt` | 234 | Singleton object. All TTS state: `isPlaying`, `title`, `subtitle`, `ttsSpeed`, `ttsPitch`, `activeTtsTabId`, `currentlyActiveTabId`, `playTrackInputList` (cap 300), `webSpeakNativeFallbackList` (cap 300), `isPlayerRunning`, `isAudiobookModeActive`. Callback routing between WebView ↔ notification/lockscreen. Also holds `onLoadUrlInWebView`, `onManualExtractAndPlay`, and `lastKnownContext` for background operations. |
 | `WtrWebAppInterface.kt` | 80 | JS bridge class (one per tab). `@JavascriptInterface` methods: `syncUrl`, `syncMetadata`, `postPlaybackState`, `syncPollState`, `speakNative`, `cancelNative`, `pauseNative`, `resumeNative`. Clamps parameters/clipping safely for protection. |
 | `SecurePreferences.kt` | 50 | Utility object wrapper for `EncryptedSharedPreferences`. Handles keystore-based encryption for `gemini_api_key`, fallback MODE_PRIVATE support, and automatic secure migration from cleartext SharedPreferences. |
 | `WtrLogManager.kt` | 93 | Singleton. 100-entry ring buffer, SharedPreferences persistence, `loggerScope` on `Dispatchers.IO`, `"||LC||"` delimiter, user toggle `"enable_logs"`. |
 | `GeminiTranslator.kt` | 135 | Singleton. Generates model using cached instances. Applies high-fidelity literal-to-literary translation rules matching NoveLM and contextual localization specialized for Xianxia, Wuxia, Wuxia-specific vocabulary, large figures, other genres of novels. Uses JSON translation mapping. |
+| `WtrChapterUrlResolver.kt` | 235 | Pure-Kotlin next chapter URL resolver. Fetches page HTML via `HttpURLConnection` on IO thread, parses `<a>` tags to find "next chapter" links by CSS class, ID, or text keywords (Chinese/English). Falls back to numeric URL increment. No WebView dependency — safe for background service calls. |
+| `WtrNextChapterHandler.kt` | 160 | Background-safe auto-next chapter orchestrator. Runs in the foreground service's coroutine scope. Resolves next URL via `WtrChapterUrlResolver`, applies Google Translate proxy, handles anti-CAPTCHA delays, loads URL via `WtrAudioControlBridge.onLoadUrlInWebView`, polls for extraction completion (25s timeout). |
 | `StreamingJsonParser.kt` | 237 | Pull parser using `android.util.JsonReader`. Parses backup stream: version, timestamp, settings (type-safe), history, bookmarks, tabs. Inner class `BackupData` data class. |
 | `BackupEncryption.kt` | 119 | `AES/CBC/PKCS7Padding` via `AndroidKeyStore`. `encryptBackup()`, `decryptBackup()`, `getEncryptingStream()`, `getDecryptingStream()` for streaming I/O. Keystore alias: `"wtr_backup_key"`. |
 | `CrashReportManager.kt` | 75 | Uncaught exception handler. Saves crash reports utilizing WeakReference to avoid memory leaks. Auto-clears reports older than 7 days. Attaches last 20 logs. |
@@ -367,7 +394,7 @@ Tab switching uses local snapshot references (`val tabForView = activeTab!!`) in
 | `theme/Color.kt` | 11 | Color constants for light/dark palettes. |
 | `theme/Type.kt` | 36 | Typography definitions (Material 3 `Typography`). |
 
-**Total: 33 source files, ~10,500 lines of Kotlin.**
+**Total: 35 source files, ~11,000 lines of Kotlin.**
 
 ---
 
@@ -395,9 +422,9 @@ Auto-translate sites (4): TimoTxt, Novel543, Twkan, NovelHubApp — routed throu
 
 1. **Don't use `JSONObject` for backup parsing.** Always use `StreamingJsonParser` (pull parser). Loading full JSON into memory causes 150-200MB spikes and ANR crashes on low-RAM devices.
 
-2. **Don't remove `@JavascriptInterface` annotations.** ProGuard's `proguard-rules.pro` has `-keepclassmembers class com.example.WtrWebAppInterface { *; }` but annotations are the canonical contract. Removing them risks R8 stripping the methods.
+2. **Don't remove `@JavascriptInterface` annotations.** ProGuard's `proguard-rules.pro` has `-keepclassmembers class com.paras.novelreaderkt.WtrWebAppInterface { *; }` but annotations are the canonical contract. Removing them risks R8 stripping the methods.
 
-3. **Don't change the package from `com.example`.** ProGuard keep rules, `namespace` in `build.gradle.kts`, and room schema all reference `com.example`. Refactoring breaks release builds silently.
+3. **Don't change the package from `com.paras.novelreaderkt`.** ProGuard keep rules, `namespace` in `build.gradle.kts`, and room schema all reference `com.paras.novelreaderkt`. Refactoring breaks release builds silently.
 
 4. **Don't use `data:` or `blob:` URLs in history.** Filtered out in `BrowserViewModel.onPageLoaded()` — they're internal browser artifacts, not navigable pages. Also filtered: URLs > 2048 chars.
 

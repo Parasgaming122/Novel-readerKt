@@ -30,6 +30,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.paras.novelreaderkt.BrowserViewModel
 import com.paras.novelreaderkt.WtrAudioControlBridge
 import com.paras.novelreaderkt.sites.WebsiteSupportRegistry
+import com.paras.novelreaderkt.ui.theme.ThemeSwatches
 
 @Composable
 fun SettingsPanel(
@@ -202,20 +203,39 @@ fun SettingsPanel(
                             "Forest" to "Forest Green",
                             "Ocean" to "Ocean Blue"
                         )
+                        val themesRow3 = listOf(
+                            "CosmicSlate" to "Cosmic Slate",
+                            "Bauhaus" to "Bauhaus"
+                        )
+
+                        // Helper: text color for a given theme chip
+                        fun chipTextColor(key: String): Color = when (key) {
+                            "White", "Sepia", "Bauhaus" -> Color(0xFF1A1C1E)
+                            else -> Color.White
+                        }
+
+                        // Helper: swatch for a given theme key
+                        fun chipSwatch(key: String): Pair<Color, Color> = when (key) {
+                            "Dark" -> ThemeSwatches.Dark
+                            "Grey" -> ThemeSwatches.Grey
+                            "White" -> ThemeSwatches.White
+                            "Sepia" -> ThemeSwatches.Sepia
+                            "Forest" -> ThemeSwatches.Forest
+                            "Ocean" -> ThemeSwatches.Ocean
+                            "CosmicSlate" -> ThemeSwatches.CosmicSlate
+                            "Bauhaus" -> ThemeSwatches.Bauhaus
+                            else -> ThemeSwatches.Dark
+                        }
                         
                         Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                            // Row 1
                             Row(
                                 modifier = Modifier.fillMaxWidth(),
                                 horizontalArrangement = Arrangement.spacedBy(6.dp)
                             ) {
                                 themesRow1.forEach { (themeKey, label) ->
                                     val isSelected = currentThemeName == themeKey
-                                    val (bg, prim) = when (themeKey) {
-                                        "Dark" -> Color(0xFF1C1B1F) to Color(0xFFD0BCFF)
-                                        "Grey" -> Color(0xFF181C20) to Color(0xFFA8B2C1)
-                                        "White" -> Color(0xFFF9F9FF) to Color(0xFF1976D2)
-                                        else -> Color(0xFF1C1B1F) to Color(0xFFD0BCFF)
-                                    }
+                                    val (bg, prim) = chipSwatch(themeKey)
                                     
                                     Box(
                                         modifier = Modifier
@@ -239,24 +259,20 @@ fun SettingsPanel(
                                             text = label,
                                             fontSize = 10.sp,
                                             fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
-                                            color = if (themeKey == "White") Color(0xFF1A1C1E) else Color.White
+                                            color = chipTextColor(themeKey)
                                         )
                                     }
                                 }
                             }
                             
+                            // Row 2
                             Row(
                                 modifier = Modifier.fillMaxWidth(),
                                 horizontalArrangement = Arrangement.spacedBy(6.dp)
                             ) {
                                 themesRow2.forEach { (themeKey, label) ->
                                     val isSelected = currentThemeName == themeKey
-                                    val (bg, prim) = when (themeKey) {
-                                        "Sepia" -> Color(0xFFF5EBE1) to Color(0xFF8D5B4C)
-                                        "Forest" -> Color(0xFF152A18) to Color(0xFF81C784)
-                                        "Ocean" -> Color(0xFF0A1E36) to Color(0xFF64B5F6)
-                                        else -> Color(0xFF1C1B1F) to Color(0xFFD0BCFF)
-                                    }
+                                    val (bg, prim) = chipSwatch(themeKey)
                                     
                                     Box(
                                         modifier = Modifier
@@ -280,7 +296,44 @@ fun SettingsPanel(
                                             text = label,
                                             fontSize = 10.sp,
                                             fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
-                                            color = if (themeKey == "Sepia") Color(0xFF201A18) else Color.White
+                                            color = chipTextColor(themeKey)
+                                        )
+                                    }
+                                }
+                            }
+
+                            // Row 3 — new themes
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                themesRow3.forEach { (themeKey, label) ->
+                                    val isSelected = currentThemeName == themeKey
+                                    val (bg, prim) = chipSwatch(themeKey)
+                                    
+                                    Box(
+                                        modifier = Modifier
+                                            .weight(1f)
+                                            .height(42.dp)
+                                            .clip(RoundedCornerShape(8.dp))
+                                            .background(bg)
+                                            .border(
+                                                width = if (isSelected) 2.dp else 1.dp,
+                                                color = if (isSelected) prim else Color.Gray.copy(alpha = 0.3f),
+                                                shape = RoundedCornerShape(8.dp)
+                                            )
+                                            .clickable {
+                                                currentThemeName = themeKey
+                                                sharedPrefs.edit().putString("app_theme", themeKey).apply()
+                                                onThemeChanged(themeKey)
+                                            },
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Text(
+                                            text = label,
+                                            fontSize = 10.sp,
+                                            fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
+                                            color = chipTextColor(themeKey)
                                         )
                                     }
                                 }

@@ -1,6 +1,6 @@
 # Core Engine Reference Manual
 
-> Technical reference for every core Kotlin class in the `com.example` root package
+> Technical reference for every core Kotlin class in the `com.paras.novelreaderkt` root package
 > of the Novel Reader Android app (Wtr-Lab Browser).
 
 ---

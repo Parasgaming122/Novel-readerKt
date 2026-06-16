@@ -15,8 +15,17 @@ interface BrowserDao {
     @Query("SELECT * FROM history WHERE url = :url LIMIT 1")
     suspend fun getHistoryByUrl(url: String): HistoryEntry?
 
+    @Query("SELECT * FROM history WHERE url = :url OR (title = :title AND id != 0) LIMIT 1")
+    suspend fun getHistoryByUrlOrTitle(url: String, title: String): HistoryEntry?
+
     @Query("DELETE FROM history WHERE id NOT IN (SELECT id FROM history ORDER BY timestamp DESC LIMIT :limit)")
     suspend fun pruneHistory(limit: Int)
+
+    @Query("SELECT COUNT(*) FROM history")
+    suspend fun getHistoryCount(): Int
+
+    @Query("DELETE FROM history WHERE id IN (SELECT id FROM history ORDER BY timestamp DESC LIMIT -1 OFFSET :limit)")
+    suspend fun pruneHistoryOffset(limit: Int)
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertHistory(entry: HistoryEntry)
@@ -48,6 +57,12 @@ interface BrowserDao {
 
     @Query("SELECT * FROM bookmarks WHERE isNovel = 1")
     suspend fun getAllNovelBookmarks(): List<BookmarkEntry>
+
+    @Query("SELECT * FROM bookmarks WHERE isNovel = 1 AND domain = :host AND (novelTitle = :novelTitle OR url = :url) LIMIT 1")
+    suspend fun getNovelBookmarkByHostAndTitle(host: String, novelTitle: String, url: String): BookmarkEntry?
+
+    @Query("SELECT * FROM bookmarks WHERE isNovel = 1 AND domain = :host AND (url LIKE '%' || :urlPrefix || '%' OR novelTitle LIKE :titlePrefix || '%' OR url = :url) LIMIT 1")
+    suspend fun getNovelBookmarkByHost(host: String, urlPrefix: String, titlePrefix: String, url: String): BookmarkEntry?
 
     @Query("DELETE FROM bookmarks WHERE id = :id")
     suspend fun deleteBookmark(id: Long)

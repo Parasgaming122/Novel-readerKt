@@ -101,6 +101,7 @@ A dedicated **foreground service** (`WtrBrowserService`) ensures uninterrupted a
 - **Wi-Fi lock**: `WIFI_MODE_FULL_HIGH_PERF` maintains network connectivity for streaming chapters
 - **Notification throttling**: Media notification updates gated at 1.5s intervals to prevent ANR
 - **Tab-scoped isolation**: Switching tabs preserves ongoing TTS playback on the source tab
+- **Background auto-next chapter**: When the last paragraph of a chapter finishes, the native `WtrNextChapterHandler` resolves the next chapter URL via pure HTTP (no WebView JS), applies Google Translate proxy if needed, and loads the next page — all without requiring the app to be in the foreground. This ensures seamless audiobook playback with screen off or app backgrounded, with translated text loading correctly every time.
 
 ### Translation
 
@@ -137,9 +138,9 @@ Full-featured tab management system:
 - **Navigation history**: Per-tab history stack with back gesture support
 
 #### 9. Static Asset Caching
-SHA-256 based local caching for `wtr-lab.com` assets:
+Lightweight djb2-hashed local caching for `wtr-lab.com` assets:
 - Intercepts static resource requests (`.js`, `.css`, `.png`, `.woff`, `.woff2`, `.ttf`)
-- Caches to `cacheDir/wtr_static_cache` with content-hash verification
+- Caches to `cacheDir/wtr_static_cache` with fast string-hash filenames
 - Dramatically speeds up tab switching and chapter navigation on the primary site
 - Transparent — cached resources load instantly without network round-trips
 
@@ -246,10 +247,10 @@ Novel Reader has specialized scraper logic, TTS integration, and translation sup
 | **UI** | `BrowserAppScreen.kt`, `TabsPanel.kt`, `BookmarksPanel.kt`, etc. | Jetpack Compose screens, Material 3 theming, user interactions |
 | **ViewModel** | `BrowserViewModel.kt` | MVVM state management, tab operations, search, backup orchestration |
 | **Service** | `WtrBrowserService.kt` | Foreground TTS service with MediaSession, wake/Wi-Fi locks |
-| **Bridge** | `WtrWebAppInterface.kt`, `WtrAudioControlBridge.kt` | Bidirectional JS ↔ Native communication, global audio state |
+| **Bridge** | `WtrWebAppInterface.kt`, `WtrAudioControlBridge.kt` | Bidirectional JS ↔ Native communication, global audio state, background chapter nav callbacks |
 | **Data** | `AppDatabase.kt`, `BrowserDao.kt`, `BrowserRepository.kt` | Room persistence for tabs, history, bookmarks |
 | **Sites** | `WebsiteSupportRegistry.kt`, `WebsiteSupportImpls.kt` | Per-site scraper logic, URL matching, paragraph extraction |
-| **Engine** | `GeminiTranslator.kt`, `BackupEncryption.kt`, `PerformanceMonitor.kt` | AI translation, encryption, monitoring |
+| **Engine** | `GeminiTranslator.kt`, `WtrChapterUrlResolver.kt`, `WtrNextChapterHandler.kt`, `BackupEncryption.kt`, `PerformanceMonitor.kt` | AI translation, background next-chapter, encryption, monitoring |
 
 ### Key Design Patterns
 
@@ -304,7 +305,7 @@ Novel Reader has specialized scraper logic, TTS integration, and translation sup
 ## Project Structure
 
 ```
-app/src/main/java/com/example/
+app/src/main/java/com/paras/novelreaderkt/
 ├── MainActivity.kt                  # Entry point, permissions, WebView pool
 ├── BrowserViewModel.kt              # MVVM state management, backup logic
 ├── BrowserSection.kt                # Navigation section enum
@@ -318,6 +319,8 @@ app/src/main/java/com/example/
 ├── PerformanceMonitor.kt            # Heap monitoring, auto-GC at 95%
 ├── NetworkErrorHandler.kt           # Exponential backoff retry wrapper
 ├── GeminiTranslator.kt              # Google Gemini 2.5 Flash AI translation
+├── WtrChapterUrlResolver.kt          # Pure-Kotlin next chapter URL resolver (background-safe)
+├── WtrNextChapterHandler.kt           # Background auto-next chapter orchestrator
 ├── data/                            # Room database layer
 │   ├── AppDatabase.kt               # Room database configuration
 │   ├── BookmarkEntry.kt             # Novel/website bookmark entity
@@ -327,12 +330,12 @@ app/src/main/java/com/example/
 │   └── TabEntry.kt                  # Browser tab entity
 ├── sites/                           # Website support system
 │   ├── WebsiteSupport.kt            # Support interface definition
-│   ├── WebsiteSupportImpls.kt       # 11 site implementations
+│   ├── SiteExtractorHelper.kt       # JS extractor invocation helper
 │   ├── WebsiteSupportRegistry.kt    # Central domain → impl registry
 │   └── commons/
 │       └── Commons.kt                # Shared CSS selectors & patterns
 └── ui/                              # Jetpack Compose UI
-    ├── BrowserAppScreen.kt           # Main screen (3226 lines)
+    ├── BrowserAppScreen.kt           # Main screen (~3540 lines)
     ├── BookmarksPanel.kt             # Novel & website bookmarks
     ├── HistoryPanel.kt               # Browsing history
     ├── SettingsPanel.kt              # 5-section settings (speech, display, privacy, etc.)
@@ -421,7 +424,7 @@ Novel Reader uses **GitHub Actions** for automated builds and manual deployments
 ### 1. Automated Debug Builder
 
 - **Workflow File**: `.github/workflows/build-apk.yml`
-- **Trigger**: Push to `main` branch
+- **Trigger**: Push to `modular` branch
 - **Build**: Compiles the debug APK using the latest Gradle and JDK 17
 - **Release**: Automatically creates a **GitHub Release** with SemVer patch increment
 - **Artifact**: Uploads the signed debug APK to the release

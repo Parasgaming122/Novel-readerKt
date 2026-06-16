@@ -3,20 +3,28 @@ package com.paras.novelreaderkt.ui
 import android.webkit.WebView
 
 fun injectForceDarkCss(webView: WebView) {
-    val css = """
-        html, body {
-            background-color: #121212 !important;
-            color: #f1f1f1 !important;
-        }
-        h1, h2, h3, h4, h5, h6, p, span, a, li, button, input {
-            color: #f1f1f1 !important;
-            background-color: transparent !important;
-        }
-        main, article, section, div, header, footer {
-            background-color: #1a1a1a !important;
-        }
+    val js = """
+        (function() {
+            if (document.getElementById('wtr-force-dark-style')) return;
+            var style = document.createElement('style');
+            style.id = 'wtr-force-dark-style';
+            style.type = 'text/css';
+            style.innerHTML = `
+                html, body {
+                    background-color: #121212 !important;
+                    color: #f1f1f1 !important;
+                }
+                h1, h2, h3, h4, h5, h6, p, span, a, li, button, input {
+                    color: #f1f1f1 !important;
+                    background-color: transparent !important;
+                }
+                main, article, section, div, header, footer {
+                    background-color: #1a1a1a !important;
+                }
+            `;
+            document.head.appendChild(style);
+        })();
     """.trimIndent()
-    val js = "var style = document.createElement('style'); style.type = 'text/css'; style.innerHTML = '$css'; document.head.appendChild(style);"
     webView.evaluateJavascript(js, null)
 }
 
@@ -297,10 +305,10 @@ fun injectTtsBridgeScript(webView: WebView) {
                 return originalPause.apply(this, arguments);
             };
 
-            // Periodically check if speechSynthesis changed/reset on this window layout
-            setInterval(() => {
-                if (window.speechSynthesis !== synthInstance) {
-                    console.log("Re-applying speechSynthesis polyfill...");
+            // Check if speechSynthesis was reset — only when user interacts (cheaper than 1s interval)
+            let _lastPolyfillCheck = 0;
+            document.addEventListener('visibilitychange', function() {
+                if (document.visibilityState === 'visible' && window.speechSynthesis !== synthInstance) {
                     Object.defineProperty(window, 'speechSynthesis', {
                         value: synthInstance,
                         writable: true,
@@ -308,7 +316,7 @@ fun injectTtsBridgeScript(webView: WebView) {
                         enumerable: true
                     });
                 }
-            }, 1000);
+            });
 
             // Fire voiceschanged so website knows speech is ready to load
             setTimeout(() => {
@@ -371,7 +379,12 @@ fun injectTtsBridgeScript(webView: WebView) {
             }
 
             // Setup periodic syncing & states polling
-            setInterval(() => {
+            // Use 1500ms interval instead of 500ms — DOM queries are expensive on mobile
+            let _wtrPollInterval = setInterval(() => {
+                // Skip ALL work when idle — no DOM queries, no syncs
+                if (!isUserPlayingMode && !synthInstance.speaking) {
+                    return;
+                }
                 let isPlaying = false;
                 let title = document.title || "Wtr-Lab Novel";
                 let header = document.querySelector('h1, h2, .chapter-title, .title') || {};
@@ -404,10 +417,8 @@ fun injectTtsBridgeScript(webView: WebView) {
                 let subtitleVal = isPlaying ? (progVal ? "Paragraph " + progVal : "Reading novel text...") : "Paused";
                 let syncedUrl = window.location.href;
                 try {
-                    // Unique tracking for SPA-style reader sites that don't change URL on chapter swap (NovelHubApp)
                     if (syncedUrl.includes("novelhubapp.com/reader") || syncedUrl.includes("novelhubapp.com/novel") || syncedUrl.includes("novelhub.net/novel")) {
                         let chapterIndicator = "";
-                        // Try to find chapter ID or number in standard containers
                         let chEl = document.querySelector('.chapter-title, .title, .current-chapter, h1, h2');
                         if (chEl) {
                             chapterIndicator = chEl.innerText.trim();
@@ -416,7 +427,6 @@ fun injectTtsBridgeScript(webView: WebView) {
                         }
                         
                         if (chapterIndicator) {
-                            // Extract numbers or specific strings to make hash unique
                             let cleanIndicator = chapterIndicator.replace(/[^a-zA-Z0-9]/g, '_').toLowerCase();
                             if (cleanIndicator.length > 0) {
                                 if (!syncedUrl.includes("#")) {
@@ -424,7 +434,6 @@ fun injectTtsBridgeScript(webView: WebView) {
                                 } else if (!syncedUrl.includes("wtr=")) {
                                     syncedUrl += "&wtr=" + cleanIndicator;
                                 } else {
-                                    // Update existing wtr hash
                                     let base = syncedUrl.split("wtr=")[0];
                                     syncedUrl = base + "wtr=" + cleanIndicator;
                                 }
@@ -437,8 +446,12 @@ fun injectTtsBridgeScript(webView: WebView) {
                 if (window.WtrBridge && window.WtrBridge.syncUrl) {
                     window.WtrBridge.syncUrl(syncedUrl, document.title || "Wtr-Lab Novel");
                 }
-                
-                if (window.WtrBridge && window.WtrBridge.syncMetadata) {
+            }, 1500);
+
+            // Sync metadata only on page load / TTS start, not every 500ms
+            function syncMetadataOnce() {
+                if (!window.WtrBridge || !window.WtrBridge.syncMetadata) return;
+                try {
                     let cover = '';
                     let meta = document.querySelector('meta[property="og:image"]');
                     if (meta && meta.content) cover = meta.content;
@@ -450,16 +463,19 @@ fun injectTtsBridgeScript(webView: WebView) {
                         let img = document.querySelector('.book-cover img, .cover img, .novel-cover img, img.cover, .cover-box img, .pic img, img.book-img');
                         if (img && img.src) cover = img.src;
                     }
-
                     let dynTitle = document.title || "";
                     let h1 = document.querySelector('h1.title, h1.book-title, .novel-title');
                     if (h1 && h1.innerText && h1.innerText.length > 0) {
                         dynTitle = h1.innerText.trim();
                     }
-
                     window.WtrBridge.syncMetadata(document.title || "", dynTitle, cover);
-                }
-            }, 500);
+                } catch(e) {}
+            }
+            // Run metadata sync once after injection, then on visibility changes
+            setTimeout(syncMetadataOnce, 1000);
+            document.addEventListener('visibilitychange', function() {
+                if (document.visibilityState === 'visible') syncMetadataOnce();
+            });
         })();
     """.trimIndent()
     webView.evaluateJavascript(jsScript, null)

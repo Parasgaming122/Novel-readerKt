@@ -1,14 +1,15 @@
 package com.paras.novelreaderkt
 
+import android.content.Context
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 
 object WtrAudioControlBridge {
     // Actions from notification / lockscreen to WebView
-    var playAction: (() -> Unit)? = null
-    var pauseAction: (() -> Unit)? = null
-    var nextAction: (() -> Unit)? = null
-    var prevAction: (() -> Unit)? = null
+    @Volatile var playAction: (() -> Unit)? = null
+    @Volatile var pauseAction: (() -> Unit)? = null
+    @Volatile var nextAction: (() -> Unit)? = null
+    @Volatile var prevAction: (() -> Unit)? = null
 
     // State from WebView to notification / lockscreen
     private val _isPlaying = MutableStateFlow(false)
@@ -88,22 +89,22 @@ object WtrAudioControlBridge {
     }
 
     // Connection check - ensures foreground service is listening
-    var onStateChangedCallback: (() -> Unit)? = null
+    @Volatile var onStateChangedCallback: (() -> Unit)? = null
 
     // Callback when JS extracts metadata like cover image and title
-    var onMetadataExtracted: ((tabId: Long, novelTitle: String, chapterTitle: String, coverImage: String) -> Unit)? = null
+    @Volatile var onMetadataExtracted: ((tabId: Long, novelTitle: String, chapterTitle: String, coverImage: String) -> Unit)? = null
 
     // TTS actions routed to foreground service
-    var onSpeakNative: ((text: String, rate: Float, pitch: Float, lang: String) -> Unit)? = null
-    var onCancelNative: (() -> Unit)? = null
-    var onPauseNative: (() -> Unit)? = null
-    var onResumeNative: (() -> Unit)? = null
+    @Volatile var onSpeakNative: ((text: String, rate: Float, pitch: Float, lang: String) -> Unit)? = null
+    @Volatile var onCancelNative: (() -> Unit)? = null
+    @Volatile var onPauseNative: (() -> Unit)? = null
+    @Volatile var onResumeNative: (() -> Unit)? = null
 
     // TTS events routed back to WebView JavaScript
-    var onWebViewProgressTrigger: ((event: String, charIndex: Int) -> Unit)? = null
+    @Volatile var onWebViewProgressTrigger: ((event: String, charIndex: Int) -> Unit)? = null
 
     // Optional callback for custom trackplayer sentence completion
-    var onTtsDone: (() -> Unit)? = null
+    @Volatile var onTtsDone: (() -> Unit)? = null
 
     // Secondary background TTS paragraph list to bypass background JS roundtrip throttling on Wtr-Lab / web speechSynthesis websites
     private val _webSpeakNativeFallbackList = MutableStateFlow<List<String>>(emptyList())
@@ -150,7 +151,7 @@ object WtrAudioControlBridge {
     private val _currentlySpeakingText = MutableStateFlow("")
     val currentlySpeakingText: StateFlow<String> = _currentlySpeakingText
 
-    private var _bookTitle = "Wtr-Lab Novel Reader"
+    @Volatile private var _bookTitle = "Wtr-Lab Novel Reader"
     var bookTitle: String
         get() = _bookTitle
         set(value) {
@@ -158,8 +159,16 @@ object WtrAudioControlBridge {
         }
 
     // Callbacks to trigger next chapter navigation and custom paragraph playback from background
-    var playCustomParagraphAction: ((Int) -> Unit)? = null
-    var nextChapterAction: (() -> Unit)? = null
+    @Volatile var playCustomParagraphAction: ((Int) -> Unit)? = null
+    @Volatile var nextChapterAction: (() -> Unit)? = null
+
+    // Background-safe callbacks: set by BrowserAppScreen, called by WtrNextChapterHandler from the service
+    // These allow the service to load URLs and trigger extraction without depending on Compose/WebView-JS
+    @Volatile var onLoadUrlInWebView: ((url: String) -> Unit)? = null
+    @Volatile var onManualExtractAndPlay: (() -> Unit)? = null
+
+    // Context reference for background operations (set by BrowserAppScreen, used by WtrNextChapterHandler)
+    @Volatile var lastKnownContext: Context? = null
 
     fun triggerNextChapter() {
         nextChapterAction?.invoke()

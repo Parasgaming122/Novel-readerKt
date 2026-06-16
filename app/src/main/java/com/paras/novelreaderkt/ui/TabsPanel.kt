@@ -75,7 +75,11 @@ fun TabsPanel(viewModel: BrowserViewModel, onTabSelected: () -> Unit) {
                     viewModel.addNewTab()
                     onTabSelected()
                 },
-                shape = RoundedCornerShape(12.dp),
+                shape = RoundedCornerShape(14.dp),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = MaterialTheme.colorScheme.primary,
+                    contentColor = MaterialTheme.colorScheme.onPrimary
+                ),
                 contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp)
             ) {
                 Icon(imageVector = Icons.Default.Add, contentDescription = "Add Tab")

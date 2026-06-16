@@ -31,6 +31,15 @@ class WtrBrowserService : Service() {
     private val NOTIFICATION_ID = 4048
     private val CHANNEL_ID = "wtr_tts_channel"
 
+    // Cached SharedPreferences instances — avoid repeated lookups on every paragraph switch
+    private lateinit var settingsPrefs: android.content.SharedPreferences
+    private lateinit var paragraphsPrefs: android.content.SharedPreferences
+    private var rememberParagraphs = true
+
+    // Batch paragraph save: only write to disk every N paragraphs or on pause/stop
+    private var paragraphSaveAccumulator = 0
+    private var lastSavedParagraphIndex = -1
+
     // Throttling fields to prevent system notification rate-limiting error: "Package enqueue rate is ... Shedding"
     private var lastNotificationUpdateTime = 0L
     private var lastIsPlaying: Boolean? = null
@@ -41,22 +50,25 @@ class WtrBrowserService : Service() {
     private var pendingNotificationRunnable: Runnable? = null
 
     private var tts: TextToSpeech? = null
-    private var isTtsInitialized = false
-    private var currentSpeechText: String = ""
-    private var currentSpeechRate: Float = 4.0f
-    private var currentSpeechPitch: Float = 1.0f
-    private var currentSpeechLang: String = "en-US"
-    private var lastWordIndex: Int = 0
+    @Volatile private var isTtsInitialized = false
+    @Volatile private var currentSpeechText: String = ""
+    @Volatile private var currentSpeechRate: Float = 4.0f
+    @Volatile private var currentSpeechPitch: Float = 1.0f
+    @Volatile private var currentSpeechLang: String = "en-US"
+    @Volatile private var lastWordIndex: Int = 0
 
     // Coroutine scope for service tasks
     private val serviceScope = CoroutineScope(Dispatchers.Main + kotlinx.coroutines.SupervisorJob())
+
+    // Reusable handler for onDone callbacks — avoids creating new Handler per paragraph
+    private val mainHandler = android.os.Handler(android.os.Looper.getMainLooper())
 
     // Coroutine job to debounce state transitions during fast paragraph switching
     private var cancelJob: kotlinx.coroutines.Job? = null
 
     // Background WebView speech timeout detection and native backup takeover loop
     private val webviewSpeechTimeoutHandler = android.os.Handler(android.os.Looper.getMainLooper())
-    private var isBackupTakeoverActive = false
+    @Volatile private var isBackupTakeoverActive = false
     private val webviewSpeechTimeoutRunnable = object : Runnable {
         override fun run() {
             val fallbackList = WtrAudioControlBridge.webSpeakNativeFallbackList.value
@@ -80,6 +92,10 @@ class WtrBrowserService : Service() {
         createNotificationChannel()
         setupMediaSession()
         updateNotification()
+
+        // Initialize the background-safe next chapter handler with this service's coroutine scope
+        WtrNextChapterHandler.init(serviceScope)
+        WtrAudioControlBridge.lastKnownContext = applicationContext
 
         // Hook up the bridge to update notifications on playback changes
         WtrAudioControlBridge.onStateChangedCallback = {
@@ -118,11 +134,13 @@ class WtrBrowserService : Service() {
         }
 
         // Load initial values from SharedPreferences
-        val sharedPrefs = getSharedPreferences("wtr_browser_settings", Context.MODE_PRIVATE)
-        val speed = sharedPrefs.getFloat("tts_speed", 4.0f)
-        val pitch = sharedPrefs.getFloat("tts_pitch", 1.0f)
-        val accent = sharedPrefs.getString("tts_accent", "US") ?: "US"
-        val voiceName = sharedPrefs.getString("tts_voice_name", "") ?: ""
+        settingsPrefs = getSharedPreferences("wtr_browser_settings", Context.MODE_PRIVATE)
+        paragraphsPrefs = getSharedPreferences("wtr_browser_paragraphs", Context.MODE_PRIVATE)
+        rememberParagraphs = settingsPrefs.getBoolean("remember_paragraphs", true)
+        val speed = settingsPrefs.getFloat("tts_speed", 4.0f)
+        val pitch = settingsPrefs.getFloat("tts_pitch", 1.0f)
+        val accent = settingsPrefs.getString("tts_accent", "US") ?: "US"
+        val voiceName = settingsPrefs.getString("tts_voice_name", "") ?: ""
 
         WtrAudioControlBridge.setTtsSpeed(speed)
         WtrAudioControlBridge.setTtsPitch(pitch)
@@ -201,15 +219,16 @@ class WtrBrowserService : Service() {
                 
                 if (list.isNotEmpty()) {
                     if (nextIndex < list.size) {
-                        android.os.Handler(android.os.Looper.getMainLooper()).post {
+                        mainHandler.post {
                             playCustomParagraph(nextIndex)
                         }
                     } else {
                         if (WtrAudioControlBridge.isAudiobookModeActive.value) {
-                            android.os.Handler(android.os.Looper.getMainLooper()).post {
-                                WtrAudioControlBridge.triggerNextChapter()
+                            mainHandler.post {
+                                // Use background-safe native next chapter handler instead of WebView JS
+                                WtrNextChapterHandler.handleNativeNextChapter()
                                 WtrAudioControlBridge.setIsAudiobookModeActive(true)
-                                com.paras.novelreaderkt.WtrLogManager.log(applicationContext, "Auto-next triggered. Waiting for page load...")
+                                com.paras.novelreaderkt.WtrLogManager.log(applicationContext, "Auto-next triggered (native handler). Waiting for page load...")
                             }
                         } else {
                             WtrAudioControlBridge.setIsPlayerRunning(false)
@@ -222,7 +241,7 @@ class WtrBrowserService : Service() {
                     // If we are already in background takeover mode, we want to immediately post the next chunk.
                     // If we are in standard foreground/unthrottled mode, we reschedule/post the background timeout to run after 1500ms
                     // in case the WebView's JS gets throttled/asleep in background mode or when the screen is turned off.
-                    android.os.Handler(android.os.Looper.getMainLooper()).post {
+                    mainHandler.post {
                         webviewSpeechTimeoutHandler.removeCallbacks(webviewSpeechTimeoutRunnable)
                         if (isBackupTakeoverActive) {
                             webviewSpeechTimeoutHandler.postDelayed(webviewSpeechTimeoutRunnable, 100L)
@@ -335,6 +354,7 @@ class WtrBrowserService : Service() {
         cancelJob?.cancel()
         webviewSpeechTimeoutHandler.removeCallbacks(webviewSpeechTimeoutRunnable)
         isBackupTakeoverActive = false
+        flushParagraphSave()
         if (isTtsInitialized) {
             tts?.stop()
         }
@@ -345,6 +365,7 @@ class WtrBrowserService : Service() {
         cancelJob?.cancel()
         webviewSpeechTimeoutHandler.removeCallbacks(webviewSpeechTimeoutRunnable)
         isBackupTakeoverActive = false
+        flushParagraphSave()
         tts?.stop()
         WtrAudioControlBridge.updatePlaybackState(false, null, "Stopped")
     }
@@ -353,9 +374,26 @@ class WtrBrowserService : Service() {
         cancelJob?.cancel()
         webviewSpeechTimeoutHandler.removeCallbacks(webviewSpeechTimeoutRunnable)
         isBackupTakeoverActive = false
+        flushParagraphSave()
+        // TTS.pause()/resume() are not in the public Android SDK API.
+        // Use stop() but save position so resumeText() can continue from the right spot.
         tts?.stop()
         WtrAudioControlBridge.updatePlaybackState(false, null, "Paused")
         WtrAudioControlBridge.onWebViewProgressTrigger?.invoke("pause", lastWordIndex)
+    }
+
+    /** Flush any pending paragraph save to disk (called on pause/stop) */
+    private fun flushParagraphSave() {
+        if (paragraphSaveAccumulator > 0) {
+            paragraphSaveAccumulator = 0
+            val url = WtrAudioControlBridge.extractedUrl.value
+            val idx = WtrAudioControlBridge.currentTrackIndex.value
+            if (url.isNotEmpty() && url != "chrome://newtab" && rememberParagraphs) {
+                try {
+                    paragraphsPrefs.edit().putInt(url, idx).apply()
+                } catch(e: Exception) {}
+            }
+        }
     }
 
     private fun isPlaylistPrimarilyEnglish(): Boolean {
@@ -418,14 +456,17 @@ class WtrBrowserService : Service() {
             val validIndex = index.coerceIn(0, list.size - 1)
             WtrAudioControlBridge.setCurrentTrackIndex(validIndex)
             
-            // Autosave reading paragraph index dynamically in background
+            // Batch paragraph save: use cached SharedPreferences, write every 3 paragraphs
             val url = WtrAudioControlBridge.extractedUrl.value
-            if (url.isNotEmpty() && url != "chrome://newtab") {
-                try {
-                     if (getSharedPreferences("wtr_browser_settings", android.content.Context.MODE_PRIVATE).getBoolean("remember_paragraphs", true)) {
-                         getSharedPreferences("wtr_browser_paragraphs", android.content.Context.MODE_PRIVATE).edit().putInt(url, validIndex).apply()
-                     }
-                } catch(e: Exception) {}
+            if (url.isNotEmpty() && url != "chrome://newtab" && rememberParagraphs) {
+                paragraphSaveAccumulator++
+                if (paragraphSaveAccumulator >= 3) {
+                    paragraphSaveAccumulator = 0
+                    lastSavedParagraphIndex = validIndex
+                    try {
+                        paragraphsPrefs.edit().putInt(url, validIndex).apply()
+                    } catch(e: Exception) {}
+                }
             }
             
             val textToSpeak = list[validIndex]
@@ -451,10 +492,10 @@ class WtrBrowserService : Service() {
             if (nextIndex < list.size) {
                 playCustomParagraph(nextIndex)
             } else if (WtrAudioControlBridge.isAudiobookModeActive.value) {
-                android.os.Handler(android.os.Looper.getMainLooper()).post {
-                    WtrAudioControlBridge.triggerNextChapter()
+                mainHandler.post {
+                    WtrNextChapterHandler.handleNativeNextChapter()
                     WtrAudioControlBridge.setIsAudiobookModeActive(true)
-                    com.paras.novelreaderkt.WtrLogManager.log(applicationContext, "Auto-next triggered. Waiting for page load...")
+                    com.paras.novelreaderkt.WtrLogManager.log(applicationContext, "Auto-next triggered (native handler). Waiting for page load...")
                 }
             }
         }
@@ -472,27 +513,51 @@ class WtrBrowserService : Service() {
     private fun resumeText() {
         val list = WtrAudioControlBridge.playTrackInputList.value
         if (list.isNotEmpty()) {
+            // For custom track mode: replay from the saved word index within current paragraph
             val currentIndex = WtrAudioControlBridge.currentTrackIndex.value
-            playCustomParagraph(currentIndex)
+            val currentText = list[currentIndex]
+            if (lastWordIndex > 0 && lastWordIndex < currentText.length) {
+                // Resume from where we paused — speak remaining text from lastWordIndex
+                val remainingText = currentText.substring(lastWordIndex)
+                tts?.let {
+                    currentSpeechRate = WtrAudioControlBridge.ttsSpeed.value
+                    it.setSpeechRate(currentSpeechRate)
+                    it.setPitch(currentSpeechPitch)
+                    val locale = try {
+                        Locale.forLanguageTag(currentSpeechLang)
+                    } catch (e: Exception) {
+                        Locale.US
+                    }
+                    it.language = locale
+                    val utteranceId = "WTR_TTS_RESUME_${System.currentTimeMillis()}"
+                    val params = Bundle()
+                    params.putString(TextToSpeech.Engine.KEY_PARAM_UTTERANCE_ID, utteranceId)
+                    it.speak(remainingText, TextToSpeech.QUEUE_FLUSH, params, utteranceId)
+                    WtrAudioControlBridge.updatePlaybackState(isPlaying = true)
+                    WtrAudioControlBridge.onWebViewProgressTrigger?.invoke("resume", lastWordIndex)
+                }
+            } else {
+                // No saved position — replay the full paragraph
+                playCustomParagraph(currentIndex)
+            }
         } else if (currentSpeechText.isNotEmpty() && lastWordIndex < currentSpeechText.length) {
+            // Web-speech mode: resume from saved word index
             val remainingText = currentSpeechText.substring(lastWordIndex)
             tts?.let {
                 currentSpeechRate = WtrAudioControlBridge.ttsSpeed.value
                 it.setSpeechRate(currentSpeechRate)
                 it.setPitch(currentSpeechPitch)
-
                 val locale = try {
                     Locale.forLanguageTag(currentSpeechLang)
                 } catch (e: Exception) {
                     Locale.US
                 }
                 it.language = locale
-
                 val utteranceId = "WTR_TTS_RESUME_${System.currentTimeMillis()}"
                 val params = Bundle()
                 params.putString(TextToSpeech.Engine.KEY_PARAM_UTTERANCE_ID, utteranceId)
-
                 it.speak(remainingText, TextToSpeech.QUEUE_FLUSH, params, utteranceId)
+                WtrAudioControlBridge.updatePlaybackState(isPlaying = true)
                 WtrAudioControlBridge.onWebViewProgressTrigger?.invoke("resume", lastWordIndex)
             }
         } else {
@@ -813,7 +878,7 @@ class WtrBrowserService : Service() {
             if (wifiLock == null) {
                 try {
                     val wifiManager = applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
-                    wifiLock = wifiManager.createWifiLock(WifiManager.WIFI_MODE_FULL_HIGH_PERF, "WtrLab::PlaybackWifiLock")
+                    wifiLock = wifiManager.createWifiLock(WifiManager.WIFI_MODE_FULL_LOW_LATENCY, "WtrLab::PlaybackWifiLock")
                     wifiLock?.acquire()
                 } catch (e: Exception) {
                     e.printStackTrace()
@@ -864,12 +929,16 @@ class WtrBrowserService : Service() {
     override fun onDestroy() {
         serviceScope.cancel()
         webviewSpeechTimeoutHandler.removeCallbacks(webviewSpeechTimeoutRunnable)
+        WtrNextChapterHandler.cancel()
         WtrAudioControlBridge.onStateChangedCallback = null
         WtrAudioControlBridge.onSpeakNative = null
         WtrAudioControlBridge.onCancelNative = null
         WtrAudioControlBridge.onPauseNative = null
         WtrAudioControlBridge.onResumeNative = null
         WtrAudioControlBridge.playCustomParagraphAction = null
+        WtrAudioControlBridge.onLoadUrlInWebView = null
+        WtrAudioControlBridge.onManualExtractAndPlay = null
+        WtrAudioControlBridge.lastKnownContext = null
 
         synchronized(this) {
             try {
