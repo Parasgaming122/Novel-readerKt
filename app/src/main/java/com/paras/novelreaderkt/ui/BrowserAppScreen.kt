@@ -195,14 +195,18 @@ fun BrowserAppScreen(onThemeChanged: (String) -> Unit = {}) {
         if (url == null) {
             false
         } else {
-            val isSupportedNovelHost = com.paras.novelreaderkt.sites.WebsiteSupportRegistry.findSupport(url) != null
             val urlLower = url.lowercase()
-            val hasChapterKeyword = urlLower.contains("chapter") || 
-                                    urlLower.contains("-ch-") || 
-                                    urlLower.contains("/ch/") ||
-                                    urlLower.contains("novelhubapp") ||
-                                    urlLower.contains("wtr-lab")
-            isSupportedNovelHost || hasChapterKeyword
+            // Exclude info pages, homepages, and table-of-contents pages
+            if (com.paras.novelreaderkt.NovelContextManager.isLikelyInfoPage(url)) false
+            else {
+                val isSupportedNovelHost = com.paras.novelreaderkt.sites.WebsiteSupportRegistry.findSupport(url) != null
+                val hasChapterKeyword = urlLower.contains("chapter") ||
+                                        urlLower.contains("-ch-") ||
+                                        urlLower.contains("/ch/") ||
+                                        urlLower.contains("novelhubapp") ||
+                                        urlLower.contains("wtr-lab")
+                isSupportedNovelHost || hasChapterKeyword
+            }
         }
     }
 
@@ -256,6 +260,11 @@ fun BrowserAppScreen(onThemeChanged: (String) -> Unit = {}) {
     val currentGeminiTranslateEnabled by rememberUpdatedState(geminiTranslateEnabled)
     val currentGeminiApiKey by rememberUpdatedState(geminiApiKey)
     val currentAutoTranslateEnabled by rememberUpdatedState(autoTranslateEnabled)
+
+    // Gemini Context File (Glossary) sheet state
+    var showGlossarySheet by remember { mutableStateOf(false) }
+    var glossarySheetNovelKey by remember { mutableStateOf("") }
+    var glossarySheetTitle by remember { mutableStateOf("") }
     
     val pageLoadBackgroundLogic: (String, WebView) -> Unit = { urlVal, webView ->
         if (urlVal.isNotEmpty() && urlVal != "chrome://newtab") {
@@ -284,7 +293,7 @@ fun BrowserAppScreen(onThemeChanged: (String) -> Unit = {}) {
                                 function isJunk(text) {
                                     let t = text.toLowerCase().trim();
                                     if (t.length < 5) return true;
-                                    const promoKeywords = ["join our discord", "join discord", "patreon", "support me", "support the author", "rate this", "please review", "please rate", "author's note", "author note", "recommend", "translator", "translation", "editor's note", "editor note"];
+                                    const promoKeywords = ["join our discord", "join discord", "patreon", "support me", "support the author", "rate this", "please review", "please rate", "author's note", "author note", "recommend", "translator", "translation", "editor's note", "editor note", "friendly reminder", "温馨提示", "本章未完", "点击下一页", "继续阅读", "手机用户请浏览", "更多精彩内容", "投推荐票", "最新网址", "最新更新时间", "本章完", "（本章未完）", "返回封面", "加入书架", "上一章", "下一章", "目录"];
                                     return promoKeywords.some(keyword => t.includes(keyword));
                                 }
                                 
@@ -410,33 +419,64 @@ fun BrowserAppScreen(onThemeChanged: (String) -> Unit = {}) {
                             for (i in 0 until jsonArray.length()) paragraphsList.add(jsonArray.getString(i))
                         } catch (e: Exception) {}
                         if (paragraphsList.isNotEmpty()) {
-                            val injectionJs = withContext(Dispatchers.IO) {
-                                val translatedList = com.paras.novelreaderkt.GeminiTranslator.translateParagraphs(paragraphsList, currentGeminiApiKey)
-                                val translationMapJson = org.json.JSONArray()
-                                translatedList.forEachIndexed { index, text ->
-                                    val obj = org.json.JSONObject()
-                                    obj.put("id", index)
-                                    obj.put("text", text)
-                                    translationMapJson.put(obj)
+                            // --- Smart checks: Chinese content detection + minimum paragraph count ---
+                            val allExtractedText = paragraphsList.joinToString(" ")
+                            val isChinese = com.paras.novelreaderkt.NovelContextManager.isChineseContent(allExtractedText)
+                            if (!isChinese) {
+                                com.paras.novelreaderkt.WtrLogManager.log(context, "Gemini: skipping non-Chinese content on $urlVal")
+                            } else if (paragraphsList.size < 3) {
+                                com.paras.novelreaderkt.WtrLogManager.log(context, "Gemini: skipping page with only ${paragraphsList.size} paragraphs (likely info/nav page)")
+                            } else {
+                                // --- Load novel context (glossary) if novel is bookmarked ---
+                                val parsedTitle = com.paras.novelreaderkt.sites.WebsiteSupportRegistry.extractNovelAndChapter(webView.title ?: "", urlVal)
+                                val novelTitle = parsedTitle.first
+                                val novelKey = com.paras.novelreaderkt.NovelContextManager.buildNovelKey(urlVal, novelTitle)
+                                val hasBookmark = com.paras.novelreaderkt.NovelContextManager.hasBookmarkedNovel(context, urlVal, novelTitle)
+                                val novelContext = if (hasBookmark) {
+                                    com.paras.novelreaderkt.NovelContextManager.buildContextString(context, novelKey)
+                                } else null
+                                if (novelContext != null) {
+                                    com.paras.novelreaderkt.WtrLogManager.log(context, "Gemini: loaded glossary context for $novelTitle (${novelContext.length} chars)")
                                 }
-                                val escapedJsonString = org.json.JSONObject.quote(translationMapJson.toString())
-                                """
-                                    (function() {
-                                        try {
-                                            const translations = JSON.parse(${escapedJsonString});
-                                            translations.forEach(item => {
-                                                const el = document.querySelector('[wtr-translation-id="' + item.id + '"]');
-                                                if (el) el.innerText = item.text;
-                                            });
-                                            return "success";
-                                        } catch(e) { return "error: " + e.toString(); }
-                                    })();
-                                """.trimIndent()
-                            }
-                            suspendCancellableCoroutine<String> { continuation ->
-                                webView.evaluateJavascript(injectionJs) { result ->
-                                    if (continuation.isActive) continuation.resume(result ?: "")
+
+                                val injectionJs = withContext(Dispatchers.IO) {
+                                    val translatedList = com.paras.novelreaderkt.GeminiTranslator.translateParagraphs(paragraphsList, currentGeminiApiKey, novelContext)
+                                    val translationMapJson = org.json.JSONArray()
+                                    translatedList.forEachIndexed { index, text ->
+                                        val obj = org.json.JSONObject()
+                                        obj.put("id", index)
+                                        obj.put("text", text)
+                                        translationMapJson.put(obj)
+                                    }
+                                    // Auto-detect terms from this translation (always, not just when bookmarked)
+                                    // This builds the glossary progressively as the user reads
+                                    try {
+                                        com.paras.novelreaderkt.NovelContextManager.autoDetectTermsFromTranslation(context, novelKey, paragraphsList, translatedList)
+                                        // Store novel info for context file UI
+                                        com.paras.novelreaderkt.NovelContextManager.storeOrUpdateNovelReadingInfo(context, novelKey, novelTitle, urlVal, hasBookmark)
+                                    } catch (e: Exception) { e.printStackTrace() }
+                                    val escapedJsonString = org.json.JSONObject.quote(translationMapJson.toString())
+                                    """
+                                        (function() {
+                                            try {
+                                                const translations = JSON.parse(${escapedJsonString});
+                                                translations.forEach(item => {
+                                                    const el = document.querySelector('[wtr-translation-id="' + item.id + '"]');
+                                                    if (el) el.innerHTML = item.text;
+                                                });
+                                                return "success";
+                                            } catch(e) { return "error: " + e.toString(); }
+                                        })();
+                                    """.trimIndent()
                                 }
+                                suspendCancellableCoroutine<String> { continuation ->
+                                    webView.evaluateJavascript(injectionJs) { result ->
+                                        if (continuation.isActive) continuation.resume(result ?: "")
+                                    }
+                                }
+                                // Inject name highlighting CSS and convert <wtr-name> tags to styled spans
+                                injectNameHighlightCss(webView)
+                                convertNameTagsToSpans(webView)
                             }
                         }
                     } catch (e: Exception) { e.printStackTrace() } finally {
@@ -2690,6 +2730,25 @@ fun BrowserAppScreen(onThemeChanged: (String) -> Unit = {}) {
                                         showMenu = false
                                     }
                                 )
+                                if (currentGeminiTranslateEnabled && currentGeminiApiKey.trim().isNotEmpty()) {
+                                    DropdownMenuItem(
+                                        text = { Text("Context File") },
+                                        leadingIcon = { Icon(Icons.Default.AutoStories, contentDescription = null) },
+                                        onClick = {
+                                            val currentUrl = currentActiveWebView?.url ?: ""
+                                            if (currentUrl.contains("timotxt") || com.paras.novelreaderkt.NovelContextManager.isChineseContent(currentUrl)) {
+                                                val parsedTitle = com.paras.novelreaderkt.sites.WebsiteSupportRegistry.extractNovelAndChapter(currentActiveWebView?.title ?: "", currentUrl)
+                                                val novelKey = com.paras.novelreaderkt.NovelContextManager.buildNovelKey(currentUrl, parsedTitle.first)
+                                                showGlossarySheet = true
+                                                glossarySheetNovelKey = novelKey
+                                                glossarySheetTitle = parsedTitle.first.ifEmpty { "Unknown Novel" }
+                                            } else {
+                                                android.widget.Toast.makeText(context, "Context file is available on novel chapter pages", android.widget.Toast.LENGTH_SHORT).show()
+                                            }
+                                            showMenu = false
+                                        }
+                                    )
+                                }
                             }
                         }
                     }
@@ -3428,6 +3487,19 @@ fun BrowserAppScreen(onThemeChanged: (String) -> Unit = {}) {
                         TextButton(onClick = { longPressedUrl = null }) {
                             Text("Cancel")
                         }
+                    }
+                )
+            }
+
+            // Gemini Context File (Glossary) Bottom Sheet
+            if (showGlossarySheet && glossarySheetNovelKey.isNotEmpty()) {
+                GeminiContextSheet(
+                    novelKey = glossarySheetNovelKey,
+                    novelTitle = glossarySheetTitle,
+                    onDismiss = {
+                        showGlossarySheet = false
+                        glossarySheetNovelKey = ""
+                        glossarySheetTitle = ""
                     }
                 )
             }

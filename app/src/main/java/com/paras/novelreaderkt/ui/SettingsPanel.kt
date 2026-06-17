@@ -884,7 +884,7 @@ fun SettingsPanel(
                                         color = MaterialTheme.colorScheme.onSurface
                                     )
                                     Text(
-                                        text = "Translates Chinese/foreign novel chapters using gemini-2.5-flash for contextual localization",
+                                        text = "AI-translates Chinese novel chapters with name highlighting, glossary context, and preserved novel tropes (Chinese sites, chapters only)",
                                         fontSize = 9.sp,
                                         color = MaterialTheme.colorScheme.outline
                                     )

@@ -52,6 +52,110 @@ fun injectTranslateCssCleanup(webView: WebView) {
     webView.evaluateJavascript(jsCode, null)
 }
 
+/**
+ * Inject CSS for highlighting proper nouns (character names, sect names, etc.)
+ * in Gemini-translated content. Called after translation injection.
+ */
+fun injectNameHighlightCss(webView: WebView) {
+    val js = """
+        (function() {
+            if (document.getElementById('wtr-name-highlight-style')) return;
+            var style = document.createElement('style');
+            style.id = 'wtr-name-highlight-style';
+            style.type = 'text/css';
+            style.innerHTML = `
+                .wtr-name-highlight {
+                    color: #64b5f6 !important;
+                    font-weight: 600;
+                    text-decoration: none;
+                    border-bottom: 1px dotted rgba(100, 181, 246, 0.3);
+                    padding-bottom: 1px;
+                    transition: background-color 0.2s ease;
+                    cursor: default;
+                    border-radius: 2px;
+                    padding: 0px 2px;
+                    margin: 0px 1px;
+                }
+                .wtr-name-highlight:active {
+                    background-color: rgba(100, 181, 246, 0.15);
+                }
+                .wtr-name-highlight[data-wtr-category="sect"] {
+                    color: #ce93d8 !important;
+                    border-bottom-color: rgba(206, 147, 216, 0.3);
+                }
+                .wtr-name-highlight[data-wtr-category="sect"]:active {
+                    background-color: rgba(206, 147, 216, 0.15);
+                }
+                .wtr-name-highlight[data-wtr-category="technique"] {
+                    color: #ffb74d !important;
+                    border-bottom-color: rgba(255, 183, 77, 0.3);
+                }
+                .wtr-name-highlight[data-wtr-category="technique"]:active {
+                    background-color: rgba(255, 183, 77, 0.15);
+                }
+                .wtr-name-highlight[data-wtr-category="item"] {
+                    color: #a5d6a7 !important;
+                    border-bottom-color: rgba(165, 214, 167, 0.3);
+                }
+                .wtr-name-highlight[data-wtr-category="item"]:active {
+                    background-color: rgba(165, 214, 167, 0.15);
+                }
+                .wtr-name-highlight[data-wtr-category="location"] {
+                    color: #90caf9 !important;
+                    border-bottom-color: rgba(144, 202, 249, 0.3);
+                }
+                .wtr-name-highlight[data-wtr-category="location"]:active {
+                    background-color: rgba(144, 202, 249, 0.15);
+                }
+                .wtr-name-highlight[data-wtr-category="system"] {
+                    color: #ef9a9a !important;
+                    border-bottom-color: rgba(239, 154, 154, 0.3);
+                }
+                .wtr-name-highlight[data-wtr-category="system"]:active {
+                    background-color: rgba(239, 154, 154, 0.15);
+                }
+                .wtr-name-highlight[data-wtr-category="title"] {
+                    color: #fff59d !important;
+                    border-bottom-color: rgba(255, 245, 157, 0.3);
+                }
+                .wtr-name-highlight[data-wtr-category="title"]:active {
+                    background-color: rgba(255, 245, 157, 0.15);
+                }
+            `;
+            document.head.appendChild(style);
+        })();
+    """.trimIndent()
+    webView.evaluateJavascript(js, null)
+}
+
+/**
+ * Convert <wtr-name> tags to styled spans in the DOM.
+ * Called after translation text has been injected into paragraphs.
+ */
+fun convertNameTagsToSpans(webView: WebView) {
+    val js = """
+        (function() {
+            try {
+                var nameTags = document.querySelectorAll('wtr-name');
+                if (nameTags.length === 0) return "no_tags";
+                
+                var count = 0;
+                nameTags.forEach(function(tag) {
+                    var span = document.createElement('span');
+                    span.className = 'wtr-name-highlight';
+                    var term = tag.getAttribute('data-term') || '';
+                    if (term) span.setAttribute('data-wtr-term', term);
+                    span.innerHTML = tag.innerHTML;
+                    tag.parentNode.replaceChild(span, tag);
+                    count++;
+                });
+                return "converted_" + count;
+            } catch(e) { return "error: " + e.toString(); }
+        })();
+    """.trimIndent()
+    webView.evaluateJavascript(js, null)
+}
+
 fun injectTtsBridgeScript(webView: WebView) {
     val jsScript = """
         (function() {

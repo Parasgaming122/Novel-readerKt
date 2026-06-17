@@ -5,7 +5,7 @@ import androidx.room.Database
 import androidx.room.Room
 import androidx.room.RoomDatabase
 
-@Database(entities = [HistoryEntry::class, BookmarkEntry::class, TabEntry::class], version = 4, exportSchema = false)
+@Database(entities = [HistoryEntry::class, BookmarkEntry::class, TabEntry::class, NovelGlossaryEntry::class], version = 5, exportSchema = false)
 abstract class AppDatabase : RoomDatabase() {
     abstract fun browserDao(): BrowserDao
 

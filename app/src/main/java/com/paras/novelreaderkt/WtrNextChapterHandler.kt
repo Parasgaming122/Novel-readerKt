@@ -16,10 +16,12 @@ import java.net.URL
  * it calls [handleNativeNextChapter] which:
  *
  *  1. Resolves the next chapter URL via [WtrChapterUrlResolver] (pure HTTP, no WebView).
- *  2. Optionally applies Google Translate proxy via [getProxyTranslatedUrl].
- *  3. Loads the new URL into the WebView via [WtrAudioControlBridge.onLoadUrlInWebView].
- *  4. Waits for the page to load, polls for the URL to change.
- *  5. Triggers paragraph extraction and playback.
+ *  2. If Gemini Translate is active, loads the raw URL (no Google Translate proxy).
+ *    The pageLoadBackgroundLogic in BrowserAppScreen handles Gemini translation + extraction.
+ *  3. If only Google Translate is active, applies the translate.goog proxy.
+ *  4. Loads the new URL into the WebView via [WtrAudioControlBridge.onLoadUrlInWebView].
+ *  5. Waits for the page to load, polls for the URL to change.
+ *  6. Triggers paragraph extraction and playback if timeout occurs.
  *
  * All of this runs in the foreground service's lifecycle — no Compose dependency.
  */
@@ -58,10 +60,16 @@ object WtrNextChapterHandler {
                 WtrLogManager.log(WtrAudioControlBridge.lastKnownContext, "[NativeNextChapter] Starting next chapter resolution from $extractedUrl")
 
                 // Read settings from SharedPreferences
-                val prefs = WtrAudioControlBridge.lastKnownContext?.getSharedPreferences("wtr_browser_settings", Context.MODE_PRIVATE)
+                val ctx = WtrAudioControlBridge.lastKnownContext
+                val prefs = ctx?.getSharedPreferences("wtr_browser_settings", Context.MODE_PRIVATE)
                 val autoTranslateEnabled = prefs?.getBoolean("auto_translate_enabled", true) ?: true
                 val autoTranslateDomains = prefs?.getString("auto_translate_domains", "") ?: ""
                 val antiCaptchaDelay = prefs?.getBoolean("anti_captcha_delay", false) ?: false
+                val geminiTranslateEnabled = prefs?.getBoolean("gemini_translate_enabled", false) ?: false
+                val geminiApiKey = com.paras.novelreaderkt.SecurePreferences.getGeminiApiKey(ctx ?: return@launch)
+
+                // Strip translate.goog to get the real underlying URL for chapter resolution
+                val realUrl = stripTranslateGoog(extractedUrl)
 
                 // Step 1: Check if current URL is a translate.goog URL
                 val isCurrentlyTranslated = extractedUrl.contains("translate.goog") || extractedUrl.contains("translate.google")
@@ -69,7 +77,7 @@ object WtrNextChapterHandler {
                 // Step 2: Resolve next chapter URL (on IO thread, no WebView needed)
                 val rawNextUrl = withContext(Dispatchers.IO) {
                     WtrChapterUrlResolver.resolveNextChapterUrl(
-                        currentUrl = extractedUrl,
+                        currentUrl = realUrl,
                         autoTranslateDomains = autoTranslateDomains,
                         autoTranslateEnabled = autoTranslateEnabled
                     )
@@ -85,16 +93,28 @@ object WtrNextChapterHandler {
 
                 WtrLogManager.log(WtrAudioControlBridge.lastKnownContext, "[NativeNextChapter] Resolved next URL: $rawNextUrl")
 
-                // Step 3: Apply translation proxy if needed
-                val finalUrl = if (autoTranslateEnabled && isDomainMatched(rawNextUrl, autoTranslateDomains)) {
-                    // If currently on a translated page and anti-captcha delay is on, wait
-                    if (isCurrentlyTranslated && antiCaptchaDelay) {
-                        WtrLogManager.log(WtrAudioControlBridge.lastKnownContext, "[NativeNextChapter] Anti-CAPTCHA delay: waiting 4.5s")
-                        delay(4500)
+                // Step 3: Determine the final URL to load
+                // KEY FIX: If Gemini is active with API key, NEVER apply Google Translate proxy.
+                // The pageLoadBackgroundLogic in BrowserAppScreen will handle Gemini translation.
+                val geminiActive = geminiTranslateEnabled && geminiApiKey.trim().isNotEmpty()
+                val isChapterUrl = !NovelContextManager.isLikelyInfoPage(rawNextUrl)
+                val domainMatched = isDomainMatched(rawNextUrl, autoTranslateDomains)
+
+                val finalUrl = when {
+                    // Gemini active + chapter URL + domain matched → load raw URL, Gemini handles translation
+                    geminiActive && isChapterUrl && domainMatched -> {
+                        WtrLogManager.log(WtrAudioControlBridge.lastKnownContext, "[NativeNextChapter] Gemini active, loading raw URL (no Google Translate)")
+                        rawNextUrl
                     }
-                    getProxyTranslatedUrl(rawNextUrl)
-                } else {
-                    rawNextUrl
+                    // Google Translate path
+                    autoTranslateEnabled && domainMatched -> {
+                        if (isCurrentlyTranslated && antiCaptchaDelay) {
+                            WtrLogManager.log(WtrAudioControlBridge.lastKnownContext, "[NativeNextChapter] Anti-CAPTCHA delay: waiting 4.5s")
+                            delay(4500)
+                        }
+                        getProxyTranslatedUrl(rawNextUrl)
+                    }
+                    else -> rawNextUrl
                 }
 
                 WtrLogManager.log(WtrAudioControlBridge.lastKnownContext, "[NativeNextChapter] Loading URL in WebView: $finalUrl")
@@ -106,10 +126,14 @@ object WtrNextChapterHandler {
                 // The onPageFinished callback in BrowserAppScreen will handle extraction + playback.
                 // We just need to wait and verify it happened.
                 val waitStart = System.currentTimeMillis()
-                val maxWaitMs = 25000L // 25 seconds max wait for page load + translation + extraction
+                val maxWaitMs = if (geminiActive && isChapterUrl && domainMatched) {
+                    45000L // 45s for Gemini (API call + injection + extraction)
+                } else {
+                    25000L // 25s for Google Translate / regular pages
+                }
 
                 while (System.currentTimeMillis() - waitStart < maxWaitMs) {
-                    delay(500)
+                    delay(400)
                     val currentExtracted = WtrAudioControlBridge.extractedUrl.value
                     val currentList = WtrAudioControlBridge.playTrackInputList.value
                     val isRunning = WtrAudioControlBridge.isPlayerRunning.value
@@ -123,12 +147,6 @@ object WtrNextChapterHandler {
                     // If URL changed but no extraction yet, keep waiting
                     if (currentExtracted != extractedUrl) {
                         WtrLogManager.log(WtrAudioControlBridge.lastKnownContext, "[NativeNextChapter] URL changed to $currentExtracted, waiting for extraction...")
-                        // Check if it's a translate.goog redirect that hasn't finished yet
-                        if (autoTranslateEnabled && isDomainMatched(currentExtracted, autoTranslateDomains) &&
-                            !currentExtracted.contains("translate.goog")) {
-                            // Page loaded but translation redirect hasn't happened yet
-                            // This shouldn't happen with our direct URL loading, but handle it
-                        }
                         continue
                     }
                 }
@@ -148,6 +166,27 @@ object WtrNextChapterHandler {
                 e.printStackTrace()
                 WtrLogManager.log(WtrAudioControlBridge.lastKnownContext, "[NativeNextChapter] Error: ${e.message}")
             }
+        }
+    }
+
+    /**
+     * Strip translate.goog encoding from a URL to get the real underlying URL.
+     */
+    private fun stripTranslateGoog(url: String): String {
+        if (!url.contains("translate.goog")) return url
+        return try {
+            val uri = android.net.Uri.parse(url)
+            val host = uri.host ?: return url
+            val decodedHost = host
+                .replace(".translate.goog", "")
+                .replace("--", "_DASH_")
+                .replace("-", ".")
+                .replace("_DASH_", "-")
+            val path = uri.path ?: ""
+            val query = uri.query?.let { "?$it" } ?: ""
+            "https://$decodedHost$path$query"
+        } catch (e: Exception) {
+            url
         }
     }
 

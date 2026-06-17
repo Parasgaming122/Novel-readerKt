@@ -1,57 +1,103 @@
 package com.paras.novelreaderkt
 
+import android.util.LruCache
 import com.google.ai.client.generativeai.GenerativeModel
 import com.google.ai.client.generativeai.type.generationConfig
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
+import java.security.MessageDigest
 
 object GeminiTranslator {
-    private const val SYSTEM_INSTRUCTION = """
-        You are a professional literary translator and expert localizer specializing in Chinese web novels (including Xianxia, Wuxia, Xuanhuan, Danmei, LitRPG/System, and historical court intrigue). Your task is to translate each provided Chinese text segment into polished, publication-grade, and deeply immersive English.
-        
-        You will receive a JSON array of text blocks, each with an 'id' and 'text'. You MUST translate each block and return a JSON array matching the exact structure: [{"id": 0, "text": "Translated English text..."}, ...] without markdown or explanations.
+    private const val BASE_SYSTEM_INSTRUCTION = """
+You are a professional literary translator specializing in Chinese web novels (Xianxia, Wuxia, Xuanhuan, Danmei, LitRPG/System, historical court intrigue). Translate each Chinese text segment into polished, immersive English.
 
-        CRITICAL TRANSLATION MANDATES:
-        1. THOUGHT-FOR-THOUGHT (NoveLM Style):
-           - Do NOT translate word-for-word. Capture the visceral energy, poetic flow, and dramatic momentum.
-           - Elevate literal raw translation to vivid prose. (e.g., Instead of "Xiao Yan's fighting energy burst like a volcano, strange fire condensed into long sword", translate to: "Xiao Yan's Dou Qi erupted like a dormant volcano, while the Heavenly Flame coalesced in his palm into a crimson greatsword.")
-           - Enhance dialogue, internal monologue, and scene descriptions to read like a professionally authored English novel.
-        
-        2. TRANSLATE IDIOMS & PHRASES (No Chinese Clichés):
-           - Convert Chinese machine clichés to elegant natural expressions:
-             * "You court death!" -> "You seek your own doom!" or "How dare you!"
-             * "Coughing up blood" -> "Spat a mouthful of blood" or "Gasped weakly"
-             * "Didn't know whether to laugh or cry" -> "Exasperated yet amused" or "Shook their head in amusement"
-             * "Face ashen" -> "Pale as death" or "White as a sheet"
-             * "Given an inch, advance ten feet" -> "Given an inch, they will seize a mile"
-        
-        3. NOVEL TERMINOLOGY & PROPER NOUNS:
-           - Character Personal Names: Retain in Chinese Pinyin (e.g., Xiao Yan, Xie Lian, San Lang) with standard spelling and spacing.
-           - Sects, Peaks, Domains, Cities, Weapons, and Titles: Translate into their elegant English equivalent meanings rather than raw transliteration (e.g., "Tian Guan" -> "Heavens", "一叶之秋" -> "One Autumn Leaf", "嘉世战队" -> "Team Jiashi").
-           - Constant Cultivation Realms & Energy terms: Use highly accurate, consistent terms (e.g., Dou Qi, Qi, Spiritual Energy, Dantian / Core, Foundation Establishment, Nascent Soul, etc.).
-        
-        4. NUMBER SCALING:
-           - Convert large Chinese numeral units (万 = 10,000, 亿 = 100 million) correctly and naturally to Western notation (e.g., "10万" -> "100,000" or "a hundred thousand", "1亿" -> "100,000,000" or "a hundred million").
-           
-        5. FORMATTING & BRACKETS:
-           - NEVER use wildcards, bold formatting, or outer conversational wrappers.
-           - Preserve all original layout punctuation and brackets such as 【】 and 『』 exactly as in the source.
-           
-        6. OUTPUT VALID JSON ARRAY ONLY:
-           - You must return ONLY the raw JSON array. Never wrap in ```json or add conversation. Strict conformance is mandatory.
-    """
+INPUT FORMAT: JSON array [{"id": 0, "text": "..."}, ...]
+OUTPUT FORMAT: JSON array [{"id": 0, "text": "..."}, ...] — raw JSON only, no markdown, no explanations.
+
+TRANSLATION RULES:
+
+1. CONTENT PRESERVATION — ABSOLUTE PRIORITY:
+   - NEVER remove, omit, or merge source sentences. Every sentence must have a corresponding translation.
+   - If a sentence seems trivial or repetitive, still translate it. The reader chose to read it.
+   - Preserve the EXACT number of text blocks. Never combine or split blocks.
+
+2. PRESERVE ICONIC NOVEL PHRASES:
+   - These are beloved by readers and MUST be preserved, not paraphrased away:
+     * "You court death!" — keep as "You court death!" (iconic, do NOT soften)
+     * "Courting death!" — keep as "Courting death!"
+     * "Coughed up a mouthful of blood" — keep as is, this is a dramatic staple
+     * "His face turned ashen" — keep as is
+     * "Didn't know whether to laugh or cry" — keep as is or very close
+     * "Given an inch, they'd take a mile" — keep the idiom
+     * "Eyes filled with killing intent" — keep as is
+     * "A cold light flashed in his eyes" — keep as is
+     * "Flew into a rage" — keep as is
+     * "With a wave of his hand" — keep as is
+     * " spat blood " / " vomited blood " — keep these dramatic moments
+     * "cold snort" / "sneered" — keep the exact tone
+   - RULE: When a Chinese phrase already has a well-established English equivalent in the web novel community, USE that equivalent. Do NOT over-literary-fy it or replace it with a fancy alternative.
+
+3. NOISE REMOVAL — REMOVE THESE FROM TRANSLATION OUTPUT:
+   - Do NOT translate: "friendly reminder", "温馨提示", "本章未完", "点击下一页", "继续阅读",
+     "手机用户请浏览", "更多精彩内容", "投推荐票", "最新网址", "最新更新时间",
+     "join our discord", "patreon", "support the author", "rate this novel",
+     "read online free", "sign up to unlock", "this chapter was posted by",
+     "report any errors", "found a bug", "advertisement", "sponsored content"
+   - If a paragraph is PURELY noise (ads, site announcements, recruitment text), translate it as an empty string "".
+   - If a paragraph has story content mixed with a noise suffix, translate only the story content and drop the noise.
+
+4. PROPER NOUNS & NAME HIGHLIGHTING:
+   - Character personal names: Keep in Pinyin (Xiao Yan, Xie Lian, Lin Feng). Consistent spelling throughout.
+   - Wrap ALL proper nouns (character names, place names, sect names) in <wtr-name data-term="pinyin-or-term">Name</wtr-name> tags.
+   - Example: "<wtr-name data-term="Xiao Yan">Xiao Yan</wtr-name>'s Dou Qi erupted..."
+   - Sect/Org/Title names: Translate to English (e.g., "Heavenly Sword <wtr-name data-term="Sect">Sect</wtr-name>")
+   - Cultivation terms: Keep established English terms (Dou Qi, Qi, Spiritual Energy, Dantian, Foundation Establishment, Nascent Soul, Core Formation, Soul Formation, Deity Transformation, etc.)
+
+5. USE THE GLOSSARY (if provided below):
+   - If a NOVEL-SPECIFIC GLOSSARY section is present, use those exact translations for the listed terms.
+   - Apply the <wtr-name> tags to ALL glossary terms in the output.
+   - Keep translations consistent with the glossary across all paragraphs.
+
+6. NUMBER SCALING:
+   - 万 (10,000) → "100,000" or "a hundred thousand"
+   - 亿 (100 million) → "100,000,000" or "a hundred million"
+
+7. FORMATTING:
+   - Preserve 【】 and 『』 brackets exactly.
+   - NO bold, italics, markdown, or code formatting in the output.
+   - NO outer conversational wrappers or explanations.
+   - Output ONLY the raw JSON array.
+
+8. NATURAL BUT FAITHFUL:
+   - Make dialogue sound natural in English — contractions, varied sentence structure, appropriate register.
+   - Internal monologue should feel intimate and immediate.
+   - Scene descriptions should be vivid and cinematic.
+   - BUT: Never sacrifice content for style. Every source sentence must be present.
+"""
 
     private var cachedModel: GenerativeModel? = null
     private var cachedApiKey: String? = null
+    private var cachedSystemInstruction: String? = null
+
+    // --- Translation result cache (LRU) ---
+    // Avoids re-translating the same page on revisit. Keyed by SHA-256 of (apiKey + paragraphs hash + context hash).
+    private val translationCache: LruCache<String, List<String>> = LruCache<String, List<String>>(20) // ~20 pages
 
     @Synchronized
-    private fun getModel(apiKey: String): GenerativeModel {
-        val currentModel = cachedModel
-        if (currentModel != null && cachedApiKey == apiKey) {
-            return currentModel
+    private fun getModel(apiKey: String, novelContext: String?): GenerativeModel {
+        val fullInstruction = if (!novelContext.isNullOrBlank()) {
+            BASE_SYSTEM_INSTRUCTION.trimIndent() + "\n\n" + novelContext
+        } else {
+            BASE_SYSTEM_INSTRUCTION.trimIndent()
         }
+
+        // Reuse cached model if API key AND system instruction match
+        if (cachedModel != null && cachedApiKey == apiKey && cachedSystemInstruction == fullInstruction) {
+            return cachedModel!!
+        }
+
         val newModel = GenerativeModel(
             modelName = "gemini-2.5-flash",
             apiKey = apiKey,
@@ -59,22 +105,52 @@ object GeminiTranslator {
                 responseMimeType = "application/json"
                 temperature = 0.3f
             },
-            systemInstruction = com.google.ai.client.generativeai.type.content { 
-                text(SYSTEM_INSTRUCTION.trimIndent()) 
+            systemInstruction = com.google.ai.client.generativeai.type.content {
+                text(fullInstruction)
             }
         )
         cachedModel = newModel
         cachedApiKey = apiKey
+        cachedSystemInstruction = fullInstruction
         return newModel
     }
 
+    /**
+     * Generate a stable cache key from the input parameters.
+     */
+    private fun buildCacheKey(apiKey: String, paragraphs: List<String>, novelContext: String?): String {
+        val md = MessageDigest.getInstance("SHA-256")
+        md.update(apiKey.toByteArray())
+        for (p in paragraphs) md.update(p.toByteArray())
+        if (!novelContext.isNullOrBlank()) md.update(novelContext.toByteArray())
+        val hash = md.digest()
+        return hash.joinToString("") { "%02x".format(it) }
+    }
+
+    /**
+     * Translate paragraphs with optional novel-specific glossary context.
+     * Results are cached in an LRU cache to avoid re-translating on page revisit.
+     *
+     * @param paragraphs List of Chinese text paragraphs to translate
+     * @param apiKey Gemini API key
+     * @param novelContext Optional novel-specific glossary context string
+     * @return List of translated English paragraphs (with <wtr-name> tags for proper nouns)
+     */
     suspend fun translateParagraphs(
         paragraphs: List<String>,
-        apiKey: String
+        apiKey: String,
+        novelContext: String? = null
     ): List<String> = withContext(Dispatchers.IO) {
         if (paragraphs.isEmpty()) return@withContext emptyList()
         if (apiKey.trim().isEmpty()) {
             throw IllegalArgumentException("Gemini API key is empty.")
+        }
+
+        // Check cache first
+        val cacheKey = buildCacheKey(apiKey, paragraphs, novelContext)
+        translationCache.get(cacheKey)?.let { cached ->
+            android.util.Log.d("GeminiTranslator", "Cache hit for page (${paragraphs.size} paragraphs)")
+            return@withContext cached
         }
 
         try {
@@ -89,7 +165,7 @@ object GeminiTranslator {
             val inputText = jsonInput.toString()
 
             // 2. Initialize or get cached model instance
-            val model = getModel(apiKey)
+            val model = getModel(apiKey, novelContext)
 
             // 3. Call generate content
             val response = model.generateContent(inputText)
@@ -130,10 +206,27 @@ object GeminiTranslator {
                     result.add(originalText)
                 }
             }
+
+            // Store in cache
+            translationCache.put(cacheKey, result)
+
             result
         } catch (e: Exception) {
             e.printStackTrace()
             throw e
         }
+    }
+
+    /**
+     * Strip <wtr-name> tags from translated text for TTS/plain-text use.
+     * Returns just the plain text content.
+     */
+    fun stripNameTags(text: String): String {
+        return text.replace(Regex("""<wtr-name[^>]*>"""), "").replace("</wtr-name>", "")
+    }
+
+    /** Clear the translation cache */
+    fun clearCache() {
+        translationCache.evictAll()
     }
 }

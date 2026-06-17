@@ -94,4 +94,35 @@ interface BrowserDao {
 
     @Query("DELETE FROM tabs")
     suspend fun clearTabs()
+
+    // Novel Glossary
+    @Query("SELECT * FROM novel_glossary WHERE novelKey = :novelKey ORDER BY category, frequency DESC")
+    suspend fun getGlossaryForNovel(novelKey: String): List<NovelGlossaryEntry>
+
+    @Query("SELECT * FROM novel_glossary WHERE novelKey = :novelKey AND sourceText = :sourceText LIMIT 1")
+    suspend fun getGlossaryTerm(novelKey: String, sourceText: String): NovelGlossaryEntry?
+
+    @Query("SELECT DISTINCT novelKey FROM novel_glossary")
+    suspend fun getAllGlossaryNovelKeys(): List<String>
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertGlossaryEntry(entry: NovelGlossaryEntry): Long
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertGlossaryEntries(entries: List<NovelGlossaryEntry>)
+
+    @Query("UPDATE novel_glossary SET frequency = frequency + 1, lastSeen = :now WHERE novelKey = :novelKey AND sourceText = :sourceText")
+    suspend fun incrementTermFrequency(novelKey: String, sourceText: String, now: Long = System.currentTimeMillis())
+
+    @Query("DELETE FROM novel_glossary WHERE novelKey = :novelKey")
+    suspend fun deleteGlossaryForNovel(novelKey: String)
+
+    @Query("DELETE FROM novel_glossary WHERE id = :id")
+    suspend fun deleteGlossaryEntry(id: Long)
+
+    @Query("UPDATE novel_glossary SET translatedText = :newTranslation, pinyin = :pinyin WHERE id = :id")
+    suspend fun updateGlossaryTranslation(id: Long, newTranslation: String, pinyin: String? = null)
+
+    @Query("SELECT COUNT(*) FROM novel_glossary WHERE novelKey = :novelKey")
+    suspend fun getGlossaryCount(novelKey: String): Int
 }

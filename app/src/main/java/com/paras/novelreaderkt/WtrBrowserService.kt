@@ -57,14 +57,20 @@ class WtrBrowserService : Service() {
     @Volatile private var currentSpeechLang: String = "en-US"
     @Volatile private var lastWordIndex: Int = 0
 
+    // --- Performance caches for fast paragraph switching ---
+    @Volatile private var cachedVoice: android.speech.tts.Voice? = null
+    @Volatile private var cachedVoiceName: String = ""
+    @Volatile private var cachedPlaylistIsEnglish: Boolean? = null
+    @Volatile private var cachedPlaylistHash: Int = 0
+    @Volatile private var cachedLangTag: String = "en-US"
+
     // Coroutine scope for service tasks
     private val serviceScope = CoroutineScope(Dispatchers.Main + kotlinx.coroutines.SupervisorJob())
 
     // Reusable handler for onDone callbacks — avoids creating new Handler per paragraph
     private val mainHandler = android.os.Handler(android.os.Looper.getMainLooper())
 
-    // Coroutine job to debounce state transitions during fast paragraph switching
-    private var cancelJob: kotlinx.coroutines.Job? = null
+    // Debounce removed for speed — QUEUE_FLUSH handles instant transitions
 
     // Background WebView speech timeout detection and native backup takeover loop
     private val webviewSpeechTimeoutHandler = android.os.Handler(android.os.Looper.getMainLooper())
@@ -287,12 +293,6 @@ class WtrBrowserService : Service() {
             return
         }
 
-        // Cancel any pending pause/stopped state update so we transition seamlessly
-        cancelJob?.cancel()
-        cancelJob = serviceScope.launch {
-            delay(100L) // Subtle debounce
-        }
-
         currentSpeechText = text
         currentSpeechRate = WtrAudioControlBridge.ttsSpeed.value
         currentSpeechPitch = WtrAudioControlBridge.ttsPitch.value
@@ -303,28 +303,23 @@ class WtrBrowserService : Service() {
             it.setSpeechRate(currentSpeechRate)
             it.setPitch(currentSpeechPitch)
 
-            val customVoiceName = WtrAudioControlBridge.ttsVoiceName.value
-            val systemVoice = if (customVoiceName.isNotEmpty()) {
-                try {
-                    it.voices?.find { v -> v.name == customVoiceName }
-                } catch (e: Exception) {
-                    null
+            // Use cached voice reference — avoids O(n) voices scan on every paragraph
+            val voiceName = WtrAudioControlBridge.ttsVoiceName.value
+            if (voiceName.isNotEmpty()) {
+                if (voiceName != cachedVoiceName || cachedVoice == null) {
+                    cachedVoice = try { it.voices?.find { v -> v.name == voiceName } } catch (e: Exception) { null }
+                    cachedVoiceName = voiceName
                 }
-            } else {
-                null
+                if (cachedVoice != null) {
+                    try { it.voice = cachedVoice } catch (e: Exception) { e.printStackTrace() }
+                }
             }
 
-            if (systemVoice != null) {
-                try {
-                    it.voice = systemVoice
-                } catch (e: Exception) {
-                    e.printStackTrace()
-                }
-            } else {
+            // Only set language if no custom voice is set
+            if (cachedVoice == null) {
                 val locale = try {
                     if (lang == "en-US") {
-                        val accent = WtrAudioControlBridge.ttsAccent.value
-                        when (accent) {
+                        when (WtrAudioControlBridge.ttsAccent.value) {
                             "UK" -> Locale.UK
                             "AU" -> Locale("en", "AU")
                             "IN" -> Locale("en", "IN")
@@ -343,15 +338,13 @@ class WtrBrowserService : Service() {
             val params = Bundle()
             params.putString(TextToSpeech.Engine.KEY_PARAM_UTTERANCE_ID, utteranceId)
 
-            // QUEUE_FLUSH automatically and instantly stops active audio and schedules the new speech
-            // on the single buffer cycle, avoiding deep hardware media-player recreate lags.
+            // QUEUE_FLUSH: instantly stops active audio and schedules new speech
             it.speak(text, TextToSpeech.QUEUE_FLUSH, params, utteranceId)
             WtrAudioControlBridge.updatePlaybackState(isPlaying = true)
         }
     }
 
     private fun handleCancelNative() {
-        cancelJob?.cancel()
         webviewSpeechTimeoutHandler.removeCallbacks(webviewSpeechTimeoutRunnable)
         isBackupTakeoverActive = false
         flushParagraphSave()
@@ -362,7 +355,6 @@ class WtrBrowserService : Service() {
     }
 
     private fun stopText() {
-        cancelJob?.cancel()
         webviewSpeechTimeoutHandler.removeCallbacks(webviewSpeechTimeoutRunnable)
         isBackupTakeoverActive = false
         flushParagraphSave()
@@ -371,7 +363,6 @@ class WtrBrowserService : Service() {
     }
 
     private fun pauseText() {
-        cancelJob?.cancel()
         webviewSpeechTimeoutHandler.removeCallbacks(webviewSpeechTimeoutRunnable)
         isBackupTakeoverActive = false
         flushParagraphSave()
@@ -396,12 +387,18 @@ class WtrBrowserService : Service() {
         }
     }
 
+    /** Cached language detection — avoids scanning playlist on every paragraph switch */
     private fun isPlaylistPrimarilyEnglish(): Boolean {
         val list = WtrAudioControlBridge.playTrackInputList.value
-        if (list.isEmpty()) return true
+        val listHash = list.size * 31 + (list.firstOrNull()?.length?.hashCode() ?: 0)
+        if (listHash == cachedPlaylistHash && cachedPlaylistIsEnglish != null) {
+            return cachedPlaylistIsEnglish!!
+        }
+        cachedPlaylistHash = listHash
+        if (list.isEmpty()) { cachedPlaylistIsEnglish = true; return true }
         var enCharCount = 0
         var foreignCharCount = 0
-        val sampleSize = minOf(list.size, 15)
+        val sampleSize = minOf(list.size, 10)
         for (i in 0 until sampleSize) {
             val text = list[i]
             for (char in text) {
@@ -412,42 +409,40 @@ class WtrBrowserService : Service() {
                 }
             }
         }
-        return enCharCount >= foreignCharCount
+        val result = enCharCount >= foreignCharCount
+        cachedPlaylistIsEnglish = result
+        return result
     }
 
     private fun detectLanguageTag(text: String): String {
         if (text.isEmpty()) return "en-US"
-        
-        // Prevent expensive 5-second TextToSpeech engine re-init delays and sudden voice shifts
-        // for stray/skipped foreign lines when the overall chapter matches English.
-        if (isPlaylistPrimarilyEnglish()) {
-            return "en-US"
-        }
 
-        var zhCount = 0
-        var ruCount = 0
-        var enCount = 0
-        val sampleLength = minOf(text.length, 250)
-        for (i in 0 until sampleLength) {
-            val c = text[i]
-            when {
-                c in '\u4e00'..'\u9fa5' -> zhCount++
-                c in '\u0400'..'\u04FF' -> ruCount++
-                c.isLetter() && c.code < 128 -> enCount++
+        // Use cached language tag if the playlist language hasn't changed
+        if (cachedLangTag != "en-US" || !isPlaylistPrimarilyEnglish()) {
+            // Recompute only when not primarily English
+            var zhCount = 0
+            var ruCount = 0
+            var enCount = 0
+            val sampleLength = minOf(text.length, 100)
+            for (i in 0 until sampleLength) {
+                val c = text[i]
+                when {
+                    c in '\u4e00'..'\u9fa5' -> zhCount++
+                    c in '\u0400'..'\u04FF' -> ruCount++
+                    c.isLetter() && c.code < 128 -> enCount++
+                }
             }
+            val maxCount = maxOf(zhCount, ruCount, enCount)
+            val detected = when {
+                maxCount == 0 -> "en-US"
+                maxCount == zhCount -> "zh-CN"
+                maxCount == ruCount -> "ru-RU"
+                else -> "en-US"
+            }
+            cachedLangTag = detected
+            return detected
         }
-        
-        if (enCount > 25) {
-            return "en-US"
-        }
-        
-        val maxCount = maxOf(zhCount, ruCount, enCount)
-        return when {
-            maxCount == 0 -> "en-US"
-            maxCount == zhCount -> "zh-CN"
-            maxCount == ruCount -> "ru-RU"
-            else -> "en-US"
-        }
+        return "en-US"
     }
 
     private fun playCustomParagraph(index: Int) {
