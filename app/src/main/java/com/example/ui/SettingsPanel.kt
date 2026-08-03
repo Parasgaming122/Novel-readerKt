@@ -36,9 +36,13 @@ fun SettingsPanel(
     onDismissRequest: () -> Unit,
     viewModel: BrowserViewModel,
     onThemeChanged: (String) -> Unit,
+<<<<<<< HEAD
     webViewsMap: Map<Long, android.webkit.WebView>,
     translationEngineKey: String,
     onTranslationEngineChanged: (String) -> Unit
+=======
+    webViewsMap: Map<Long, android.webkit.WebView>
+>>>>>>> 127957c0895eac519ea1f54e93e97d19a2b1b55f
 ) {
     val context = LocalContext.current
     val contentResolver = context.contentResolver
@@ -789,7 +793,11 @@ fun SettingsPanel(
                                     color = MaterialTheme.colorScheme.onSurface
                                 )
                                 Text(
+<<<<<<< HEAD
                                     text = "Auto translate non-English web novels in-place using smart extraction & translation",
+=======
+                                    text = "Auto translate untamed non-English web novels in-place via high-speed proxy",
+>>>>>>> 127957c0895eac519ea1f54e93e97d19a2b1b55f
                                     fontSize = 10.sp,
                                     color = MaterialTheme.colorScheme.outline
                                 )
@@ -806,6 +814,7 @@ fun SettingsPanel(
                         
                         if (autoTranslateEnabled) {
                             Spacer(modifier = Modifier.height(2.dp))
+<<<<<<< HEAD
                             // Translation Engine Selector
                             Row(
                                 verticalAlignment = Alignment.CenterVertically,
@@ -868,6 +877,8 @@ fun SettingsPanel(
                             }
 
                             Spacer(modifier = Modifier.height(6.dp))
+=======
+>>>>>>> 127957c0895eac519ea1f54e93e97d19a2b1b55f
                             OutlinedTextField(
                                 value = autoTranslateDomains,
                                 onValueChange = { 
@@ -882,8 +893,41 @@ fun SettingsPanel(
                             )
                             
                             Spacer(modifier = Modifier.height(6.dp))
+<<<<<<< HEAD
                             // Gemini API Key — only shown when Gemini engine is selected
                             if (translationEngineKey == com.example.TranslationEngine.GEMINI.key) {
+=======
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        text = "Use Gemini AI Translation",
+                                        fontWeight = FontWeight.SemiBold,
+                                        fontSize = 11.sp,
+                                        color = MaterialTheme.colorScheme.onSurface
+                                    )
+                                    Text(
+                                        text = "Translates Chinese/foreign novel chapters using gemini-2.5-flash for contextual localization",
+                                        fontSize = 9.sp,
+                                        color = MaterialTheme.colorScheme.outline
+                                    )
+                                }
+                                Switch(
+                                    checked = geminiTranslateEnabled,
+                                    onCheckedChange = { 
+                                        geminiTranslateEnabled = it 
+                                        sharedPrefs.edit().putBoolean("gemini_translate_enabled", it).apply()
+                                    },
+                                    modifier = Modifier.testTag("gemini_translate_switch").scale(0.8f)
+                                )
+                            }
+
+                            if (geminiTranslateEnabled) {
+                                Spacer(modifier = Modifier.height(2.dp))
+>>>>>>> 127957c0895eac519ea1f54e93e97d19a2b1b55f
                                 var showApiKey by remember { mutableStateOf(false) }
                                 OutlinedTextField(
                                     value = geminiApiKey,
@@ -908,6 +952,33 @@ fun SettingsPanel(
                                     }
                                 )
                             }
+<<<<<<< HEAD
+=======
+                            
+                            Spacer(modifier = Modifier.height(6.dp))
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text("Anti-CAPTCHA Delay", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                    Text(
+                                        "Pauses 4.5s on translated chapters to avoid Google Translate bot blocks",
+                                        fontSize = 9.sp,
+                                        color = MaterialTheme.colorScheme.outline
+                                    )
+                                }
+                                Switch(
+                                    checked = antiCaptchaDelay,
+                                    onCheckedChange = { 
+                                        antiCaptchaDelay = it 
+                                        sharedPrefs.edit().putBoolean("anti_captcha_delay", it).apply()
+                                    },
+                                    modifier = Modifier.testTag("anti_captcha_delay_switch").scale(0.8f)
+                                )
+                            }
+>>>>>>> 127957c0895eac519ea1f54e93e97d19a2b1b55f
                         }
                     }
                 }

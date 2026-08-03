@@ -44,6 +44,7 @@ fun injectTranslateCssCleanup(webView: WebView) {
     webView.evaluateJavascript(jsCode, null)
 }
 
+<<<<<<< HEAD
 /**
  * Inject the NovelExtractor JS library into the WebView.
  * This provides window.NovelExtractor.extract() and window.NovelExtractor.extractParagraphs()
@@ -102,6 +103,8 @@ fun extractParagraphsWithNovelExtractor(webView: WebView): String {
     return jsCode
 }
 
+=======
+>>>>>>> 127957c0895eac519ea1f54e93e97d19a2b1b55f
 fun injectTtsBridgeScript(webView: WebView) {
     val jsScript = """
         (function() {

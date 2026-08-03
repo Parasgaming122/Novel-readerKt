@@ -52,8 +52,12 @@ import androidx.lifecycle.viewModelScope
 import com.example.BrowserViewModel
 import com.example.BrowserSection
 import com.example.MainActivity
+<<<<<<< HEAD
 import com.example.TranslationEngine
 import com.example.UnifiedTranslator
+=======
+import com.example.getProxyTranslatedUrl
+>>>>>>> 127957c0895eac519ea1f54e93e97d19a2b1b55f
 import com.example.WtrAudioControlBridge
 import com.example.sites.WebsiteSupportRegistry
 import com.example.sites.commons.CommonSelectors
@@ -145,8 +149,12 @@ fun BrowserAppScreen(onThemeChanged: (String) -> Unit = {}) {
     var autoTranslateEnabled by remember { mutableStateOf(sharedPrefs.getBoolean("auto_translate_enabled", true)) }
     val defaultTranslateDomains = remember { WebsiteSupportRegistry.getAutoTranslateSites().joinToString(", ") }
     var autoTranslateDomains by remember { mutableStateOf(sharedPrefs.getString("auto_translate_domains", defaultTranslateDomains) ?: defaultTranslateDomains) }
+<<<<<<< HEAD
     var translationEngineKey by remember { mutableStateOf(sharedPrefs.getString("translation_engine", TranslationEngine.GOOGLE_TRANSLATE.key) ?: TranslationEngine.GOOGLE_TRANSLATE.key) }
     var geminiTranslateEnabled by remember { mutableStateOf(sharedPrefs.getBoolean("gemini_translate_enabled", false)) } // Keep for Gemini engine users
+=======
+    var geminiTranslateEnabled by remember { mutableStateOf(sharedPrefs.getBoolean("gemini_translate_enabled", false)) }
+>>>>>>> 127957c0895eac519ea1f54e93e97d19a2b1b55f
     var geminiApiKey by remember { mutableStateOf(com.example.SecurePreferences.getGeminiApiKey(context)) }
     var adBlockerEnabled by remember { mutableStateOf(sharedPrefs.getBoolean("ad_blocker_enabled", true)) }
     var customTextZoom by remember { mutableStateOf(sharedPrefs.getInt("custom_text_zoom", 115)) }
@@ -185,8 +193,13 @@ fun BrowserAppScreen(onThemeChanged: (String) -> Unit = {}) {
     // Maintain a map of dynamic WebViews keyed by Tab ID
     var runHtmlTextExtractionAndPlayRef by remember { mutableStateOf<(() -> Unit)?>(null) }
 
+<<<<<<< HEAD
     // Translation engine state (replaces old Google Translate proxy anti-loop maps)
     var translationEngine by rememberUpdatedState(TranslationEngine.fromKey(translationEngineKey))
+=======
+    val translationAttempts = remember { mutableStateMapOf<String, Int>() }
+    val lastTranslationTime = remember { mutableStateOf(mutableMapOf<String, Long>()) }
+>>>>>>> 127957c0895eac519ea1f54e93e97d19a2b1b55f
 
     val isNovelChapterUrl: (String?) -> Boolean = { url ->
         if (url == null) {
@@ -208,26 +221,72 @@ fun BrowserAppScreen(onThemeChanged: (String) -> Unit = {}) {
             false
         } else {
             val urlLower = url.lowercase()
+<<<<<<< HEAD
             // No longer checking for translate.goog since we don't use proxy URLs anymore
             val domainsList = autoTranslateDomains.split(",").map { it.trim().lowercase() }.filter { it.isNotEmpty() }
             domainsList.any { domain ->
                 val cleanDomain = domain.replace("https://", "").replace("http://", "").replace("www.", "").trim('/')
                 cleanDomain.isNotEmpty() && urlLower.contains(cleanDomain)
+=======
+            if (urlLower.contains("translate.goog") || urlLower.contains("translate.google")) {
+                false
+            } else {
+                val domainsList = autoTranslateDomains.split(",").map { it.trim().lowercase() }.filter { it.isNotEmpty() }
+                domainsList.any { domain ->
+                    val cleanDomain = domain.replace("https://", "").replace("http://", "").replace("www.", "").trim('/')
+                    cleanDomain.isNotEmpty() && urlLower.contains(cleanDomain)
+                }
+>>>>>>> 127957c0895eac519ea1f54e93e97d19a2b1b55f
             }
         }
     }
 
+<<<<<<< HEAD
     // shouldTranslateUrl is no longer used — translation is now handled in-page via DOM injection
     // (the old Google Translate proxy redirect approach has been replaced by UnifiedTranslator)
 
     var isGeminiTranslating by remember { mutableStateOf(false) }
     val currentTranslationEngine by rememberUpdatedState(translationEngine)
+=======
+    val shouldTranslateUrl: (String?) -> Boolean = { url ->
+        if (geminiTranslateEnabled && geminiApiKey.trim().isNotEmpty() && isNovelChapterUrl(url)) {
+            false
+        } else if (!isDomainMatchedForTranslation(url)) {
+            false
+        } else {
+            val urlLower = url!!.lowercase()
+            val cleanUrl = urlLower.split("?")[0].split("#")[0].trim('/')
+            val now = System.currentTimeMillis()
+            val attempts = translationAttempts[cleanUrl] ?: 0
+            val lastTime = lastTranslationTime.value[cleanUrl] ?: 0L
+
+            if (now - lastTime < 10000) {
+                if (attempts >= 2) {
+                    android.util.Log.e("WtrBrowser", "Translation loop detected for $url! Skipping Google Translate redirection.")
+                    false
+                } else {
+                    translationAttempts[cleanUrl] = attempts + 1
+                    lastTranslationTime.value[cleanUrl] = now
+                    true
+                }
+            } else {
+                translationAttempts[cleanUrl] = 1
+                lastTranslationTime.value[cleanUrl] = now
+                true
+            }
+        }
+    }
+
+    var isGeminiTranslating by remember { mutableStateOf(false) }
+    val currentGeminiTranslateEnabled by rememberUpdatedState(geminiTranslateEnabled)
+>>>>>>> 127957c0895eac519ea1f54e93e97d19a2b1b55f
     val currentGeminiApiKey by rememberUpdatedState(geminiApiKey)
     val currentAutoTranslateEnabled by rememberUpdatedState(autoTranslateEnabled)
     
     val pageLoadBackgroundLogic: (String, WebView) -> Unit = { urlVal, webView ->
         if (urlVal.isNotEmpty() && urlVal != "chrome://newtab") {
             viewModel.viewModelScope.launch(Dispatchers.Main) {
+<<<<<<< HEAD
                 // Unified translation: works for all engines (MyMemory, Gemini)
                 val isTranslateTarget = currentAutoTranslateEnabled && isDomainMatchedForTranslation(urlVal) && isNovelChapterUrl(urlVal)
                 if (isTranslateTarget) {
@@ -236,6 +295,144 @@ fun BrowserAppScreen(onThemeChanged: (String) -> Unit = {}) {
                         // Use NovelExtractor for high-quality paragraph extraction
                         val extractionJs = extractParagraphsWithNovelExtractor(webView)
 
+=======
+                val isTranslateTarget = currentGeminiTranslateEnabled && currentGeminiApiKey.isNotEmpty() && isDomainMatchedForTranslation(urlVal) && isNovelChapterUrl(urlVal)
+                if (isTranslateTarget) {
+                    isGeminiTranslating = true
+                    try {
+                        val support = com.example.sites.WebsiteSupportRegistry.findSupport(urlVal)
+                        val containerSelectorStr = if (support != null) {
+                            support.containerSelectors.joinToString(", ")
+                        } else {
+                            ""
+                        }
+                        val pSel = support?.paragraphSelector ?: "p, .wtr-line-segment"
+                        val excludeClasses = (support?.excludeSelectors ?: emptyList()).ifEmpty { 
+                            com.example.sites.commons.CommonSelectors.COMMON_EXCLUDE 
+                        }
+                        val excludeClassesStr = excludeClasses.joinToString(", ")
+                        val requiresBrPrepVal = if (support?.requiresBrPreparation == true) "true" else "false"
+
+                        val extractionJs = """
+                            (function() {
+                                let paragraphs = [];
+                                
+                                function isJunk(text) {
+                                    let t = text.toLowerCase().trim();
+                                    if (t.length < 5) return true;
+                                    const promoKeywords = ["join our discord", "join discord", "patreon", "support me", "support the author", "rate this", "please review", "please rate", "author's note", "author note", "recommend", "translator", "translation", "editor's note", "editor note"];
+                                    return promoKeywords.some(keyword => t.includes(keyword));
+                                }
+                                
+                                let containers = [];
+                                const containerSelector = "${containerSelectorStr.replace("\"", "\\\"")}";
+                                if (containerSelector) {
+                                    let rawContainers = Array.from(document.querySelectorAll(containerSelector));
+                                    containers = rawContainers.filter(c => !rawContainers.some(other => other !== c && other.contains(c)));
+                                }
+                                
+                                function prepareBrParagraphs(contentEl) {
+                                    if (!contentEl) return;
+                                    if (contentEl.querySelector('.wtr-line-segment') || contentEl.querySelector('.wtr-focus-highlight')) return;
+                                    
+                                    const isTwkan = window.location.hostname.includes("twkan") || window.location.hostname.includes("ttkan") || window.location.href.includes("twkan") || window.location.href.includes("ttkan");
+                                    if (isTwkan) {
+                                        contentEl.querySelectorAll("div.txtad, div.txtcenter, div.ad, script, noscript, iframe, ins, .ad-placement, #ad-container").forEach(el => el.remove());
+                                        let paragraphs = [];
+                                        let currentPart = [];
+                                        
+                                        function flushPart() {
+                                            if (currentPart.length > 0) {
+                                                let joined = currentPart.join(" ").trim();
+                                                joined = joined.replace(/^[\u2003\u3000\t ]+/g, "").trim();
+                                                if (joined.length > 5) {
+                                                    paragraphs.push(joined);
+                                                }
+                                                currentPart = [];
+                                            }
+                                        }
+                                        
+                                        let children = Array.from(contentEl.childNodes);
+                                        children.forEach(node => {
+                                            if (node.nodeType === 3) {
+                                                let txt = node.textContent.trim();
+                                                if (txt) currentPart.push(txt);
+                                            } else if (node.nodeType === 1) {
+                                                let tagName = node.tagName.toLowerCase();
+                                                if (tagName === 'br') {
+                                                    flushPart();
+                                                } else if (tagName === 'font' || tagName === 'span' || tagName === 'b' || tagName === 'i' || tagName === 'strong' || tagName === 'em') {
+                                                    let txt = node.innerText || node.textContent;
+                                                    txt = txt.trim();
+                                                    if (txt) currentPart.push(txt);
+                                                } else {
+                                                    flushPart();
+                                                    let txt = node.innerText || node.textContent;
+                                                    txt = txt.trim();
+                                                    if (txt.length > 5) {
+                                                        paragraphs.push(txt);
+                                                    }
+                                                }
+                                            }
+                                        });
+                                        flushPart();
+                                        
+                                        let newHtml = "";
+                                        paragraphs.forEach(pText => {
+                                            newHtml += '<span class="wtr-line-segment">' + pText + '</span><br><br>';
+                                        });
+                                        contentEl.innerHTML = newHtml;
+                                        return;
+                                    }
+                                    
+                                    let pTags = contentEl.querySelectorAll('p');
+                                    if (pTags.length > 5) return; 
+                                    
+                                    let html = contentEl.innerHTML;
+                                    let parts = html.split(/<br\s*\/?>/i);
+                                    let newParts = parts.map(part => {
+                                        let trimmed = part.replace(/<[^>]+>/g, '').trim();
+                                        if (trimmed.length > 5) {
+                                            if (!part.trim().startsWith('<span class="wtr-line-segment"')) {
+                                                return '<span class="wtr-line-segment">' + part + '</span>';
+                                            }
+                                        }
+                                        return part;
+                                    });
+                                    contentEl.innerHTML = newParts.join('<br>');
+                                }
+                                
+                                if ($requiresBrPrepVal == "true" || $requiresBrPrepVal == true) {
+                                    containers.forEach(c => prepareBrParagraphs(c));
+                                }
+                                
+                                let pTags = [];
+                                if (containers.length > 0) {
+                                    containers.forEach(contentEl => {
+                                        let rawPTags = Array.from(contentEl.querySelectorAll("${pSel.replace("\"", "\\\"")}"));
+                                        let filtered = rawPTags.filter(p => !rawPTags.some(parent => parent !== p && parent.contains(p)));
+                                        pTags.push(...filtered);
+                                    });
+                                } else {
+                                    pTags = Array.from(document.querySelectorAll('p'));
+                                    if (pTags.length === 0) {
+                                        pTags = Array.from(document.querySelectorAll('div, span'));
+                                    }
+                                }
+                                
+                                const excludeClass = "${excludeClassesStr.replace("\"", "\\\"")}";
+                                pTags.forEach(p => {
+                                    if (excludeClass && p.closest(excludeClass)) return;
+                                    let text = p.innerText.trim();
+                                    if (text.length > 5 && !isJunk(text)) {
+                                        p.setAttribute('wtr-translation-id', paragraphs.length);
+                                        paragraphs.push(text);
+                                    }
+                                });
+                                return JSON.stringify(paragraphs);
+                            })();
+                        """.trimIndent()
+>>>>>>> 127957c0895eac519ea1f54e93e97d19a2b1b55f
                         val paragraphsJson = suspendCancellableCoroutine<String> { continuation ->
                             webView.evaluateJavascript(extractionJs) { result ->
                                 if (continuation.isActive) continuation.resume(result ?: "[]")
@@ -249,6 +446,7 @@ fun BrowserAppScreen(onThemeChanged: (String) -> Unit = {}) {
                             val jsonArray = org.json.JSONArray(cleanJson)
                             for (i in 0 until jsonArray.length()) paragraphsList.add(jsonArray.getString(i))
                         } catch (e: Exception) {}
+<<<<<<< HEAD
 
                         com.example.WtrLogManager.log(context, "UnifiedTranslator: extracted ${paragraphsList.size} paragraphs from $urlVal using engine=${currentTranslationEngine.key}")
 
@@ -259,6 +457,11 @@ fun BrowserAppScreen(onThemeChanged: (String) -> Unit = {}) {
                                     engine = currentTranslationEngine,
                                     geminiApiKey = currentGeminiApiKey
                                 )
+=======
+                        if (paragraphsList.isNotEmpty()) {
+                            val injectionJs = withContext(Dispatchers.IO) {
+                                val translatedList = com.example.GeminiTranslator.translateParagraphs(paragraphsList, currentGeminiApiKey)
+>>>>>>> 127957c0895eac519ea1f54e93e97d19a2b1b55f
                                 val translationMapJson = org.json.JSONArray()
                                 translatedList.forEachIndexed { index, text ->
                                     val obj = org.json.JSONObject()
@@ -286,10 +489,14 @@ fun BrowserAppScreen(onThemeChanged: (String) -> Unit = {}) {
                                 }
                             }
                         }
+<<<<<<< HEAD
                     } catch (e: Exception) {
                         com.example.WtrLogManager.log(context, "UnifiedTranslator error: ${e.message}")
                         e.printStackTrace()
                     } finally {
+=======
+                    } catch (e: Exception) { e.printStackTrace() } finally {
+>>>>>>> 127957c0895eac519ea1f54e93e97d19a2b1b55f
                         isGeminiTranslating = false
                         if (WtrAudioControlBridge.isAudiobookModeActive.value) {
                             delay(400)
@@ -297,6 +504,7 @@ fun BrowserAppScreen(onThemeChanged: (String) -> Unit = {}) {
                         }
                     }
                 } else {
+<<<<<<< HEAD
                     // No translation needed — handle TTS extraction normally
                     if (WtrAudioControlBridge.isAudiobookModeActive.value) {
                         val isWtrLab = urlVal.contains("wtr-lab.com") || urlVal.isEmpty()
@@ -309,14 +517,52 @@ fun BrowserAppScreen(onThemeChanged: (String) -> Unit = {}) {
                                 WtrAudioControlBridge.setIsAudiobookModeActive(false)
                             }
                         }
+=======
+                    if (WtrAudioControlBridge.isAudiobookModeActive.value) {
+                         val isTranslating = currentAutoTranslateEnabled && isDomainMatchedForTranslation(urlVal)
+                         if (isTranslating && !urlVal.contains("translate.goog")) {
+                             // Wait up to 1.5s to see if a redirect starts 
+                             var redirected = false
+                             for (i in 1..5) {
+                                 delay(300)
+                                 val currentTabUrl = viewModel.currentTab.value?.url ?: ""
+                                 if (currentTabUrl.contains("translate.goog") || !isDomainMatchedForTranslation(currentTabUrl)) {
+                                     redirected = true
+                                     break
+                                 }
+                             }
+                             if (!redirected) {
+                                 // No redirect occurred, extract and play anyway!
+                                 val isWtrLab = urlVal.contains("wtr-lab.com") || urlVal.isEmpty()
+                                 if (!isWtrLab && isNovelChapterUrl(urlVal)) {
+                                     delay(500)
+                                     runHtmlTextExtractionAndPlayRef?.invoke()
+                                 }
+                             }
+                         } else {
+                             val isWtrLab = urlVal.contains("wtr-lab.com") || urlVal.isEmpty()
+                             if (!isWtrLab && isNovelChapterUrl(urlVal)) {
+                                 delay(800)
+                                 runHtmlTextExtractionAndPlayRef?.invoke()
+                             } else {
+                                 WtrAudioControlBridge.setIsPlayerRunning(false)
+                                 if (isWtrLab) {
+                                     WtrAudioControlBridge.setIsAudiobookModeActive(false)
+                                 }
+                             }
+                         }
+>>>>>>> 127957c0895eac519ea1f54e93e97d19a2b1b55f
                     }
                 }
             }
         }
     }
 
+<<<<<<< HEAD
     }
 
+=======
+>>>>>>> 127957c0895eac519ea1f54e93e97d19a2b1b55f
     // Resolve or build WebView content for the current selected tab
     val currentActiveWebView = activeTab?.let { tab ->
         webViewsMap.getOrPut(tab.id) {
@@ -361,10 +607,14 @@ fun BrowserAppScreen(onThemeChanged: (String) -> Unit = {}) {
                             }
                         }
                         if (newProgress >= 10 && newProgress < 85) {
+<<<<<<< HEAD
                             view?.let {
                                 injectTtsBridgeScript(it)
                                 injectNovelExtractorScript(it)
                             }
+=======
+                            view?.let { injectTtsBridgeScript(it) }
+>>>>>>> 127957c0895eac519ea1f54e93e97d19a2b1b55f
                         }
                     }
                 }
@@ -372,12 +622,36 @@ fun BrowserAppScreen(onThemeChanged: (String) -> Unit = {}) {
                 webViewClient = object : WebViewClient() {
                     @Deprecated("Deprecated in Java")
                     override fun shouldOverrideUrlLoading(view: WebView?, url: String?): Boolean {
+<<<<<<< HEAD
                         // Translation is now handled in-page via DOM injection (UnifiedTranslator), not URL proxy
+=======
+                        if (url == null) return false
+                        val currentUrl = view?.url ?: ""
+                        if (!isSameBaseOrTranslatedUrl(currentUrl, url) && shouldTranslateUrl(url)) {
+                            val translatedUrl = getProxyTranslatedUrl(url)
+                            com.example.WtrLogManager.log(context, "shouldOverrideUrlLoading redirect tab=${tab.id} translation: $url -> $translatedUrl")
+                            view?.loadUrl(translatedUrl)
+                            return true
+                        }
+>>>>>>> 127957c0895eac519ea1f54e93e97d19a2b1b55f
                         return false
                     }
 
                     override fun shouldOverrideUrlLoading(view: WebView?, request: android.webkit.WebResourceRequest?): Boolean {
+<<<<<<< HEAD
                         // Translation is now handled in-page via DOM injection (UnifiedTranslator), not URL proxy
+=======
+                        val url = request?.url?.toString() ?: return false
+                        if (request.isForMainFrame && !request.url.toString().startsWith("intent://")) {
+                            val currentUrl = view?.url ?: ""
+                            if (!isSameBaseOrTranslatedUrl(currentUrl, url) && shouldTranslateUrl(url)) {
+                                val translatedUrl = getProxyTranslatedUrl(url)
+                                com.example.WtrLogManager.log(context, "shouldOverrideUrlLoading redirect tab=${tab.id} translation: $url -> $translatedUrl")
+                                view?.loadUrl(translatedUrl)
+                                return true
+                            }
+                        }
+>>>>>>> 127957c0895eac519ea1f54e93e97d19a2b1b55f
                         return false
                     }
 
@@ -390,10 +664,14 @@ fun BrowserAppScreen(onThemeChanged: (String) -> Unit = {}) {
                             isWebLoading = true
                             webProgress = 10
                         }
+<<<<<<< HEAD
                         view?.let {
                             injectTtsBridgeScript(it)
                             injectNovelExtractorScript(it)
                         }
+=======
+                        view?.let { injectTtsBridgeScript(it) }
+>>>>>>> 127957c0895eac519ea1f54e93e97d19a2b1b55f
                     }
 
                     override fun onPageFinished(view: WebView?, url: String?) {
@@ -411,10 +689,19 @@ fun BrowserAppScreen(onThemeChanged: (String) -> Unit = {}) {
                             }
                         }
                         injectTtsBridgeScript(this@apply)
+<<<<<<< HEAD
                         injectNovelExtractorScript(this@apply)
                         if (forceDarkContent) {
                             injectForceDarkCss(this@apply)
                         }
+=======
+                        if (forceDarkContent) {
+                            injectForceDarkCss(this@apply)
+                        }
+                        if (url != null && (url.contains("translate.goog") || url.contains("translate.google"))) {
+                            injectTranslateCssCleanup(this@apply)
+                        }
+>>>>>>> 127957c0895eac519ea1f54e93e97d19a2b1b55f
                     }
 
                     override fun onReceivedError(
@@ -1734,9 +2021,25 @@ fun BrowserAppScreen(onThemeChanged: (String) -> Unit = {}) {
     }
 
     // Register decoupled background-safe callbacks
+<<<<<<< HEAD
     LaunchedEffect(Unit) {
         WtrAudioControlBridge.nextChapterAction = {
             currentTriggerNextChapter()
+=======
+    LaunchedEffect(antiCaptchaDelay) {
+        WtrAudioControlBridge.nextChapterAction = {
+            val currentUrl = viewModel.currentTab.value?.url ?: ""
+            val isTranslated = currentUrl.contains("translate.goog") || currentUrl.contains("translate.google")
+            if (isTranslated && antiCaptchaDelay) {
+                com.example.WtrLogManager.log(context, "Anti-CAPTCHA Delay: Pausing 4.5s before loading next translated chapter.")
+                android.widget.Toast.makeText(context, "Auto-Next: Pausing 4.5s to bypass Google CAPTCHA filters...", android.widget.Toast.LENGTH_SHORT).show()
+                android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+                    currentTriggerNextChapter()
+                }, 4500)
+            } else {
+                currentTriggerNextChapter()
+            }
+>>>>>>> 127957c0895eac519ea1f54e93e97d19a2b1b55f
         }
     }
 
@@ -2389,6 +2692,7 @@ fun BrowserAppScreen(onThemeChanged: (String) -> Unit = {}) {
                                     onClick = {
                                         currentActiveWebView?.let { webView ->
                                             val currentUrl = webView.url
+<<<<<<< HEAD
                                             if (currentUrl != null && currentUrl != "chrome://newtab") {
                                                 // Trigger in-page translation using current engine
                                                 isGeminiTranslating = true
@@ -2396,6 +2700,13 @@ fun BrowserAppScreen(onThemeChanged: (String) -> Unit = {}) {
                                                 android.widget.Toast.makeText(context, "Translating page with ${translationEngine.displayName}...", android.widget.Toast.LENGTH_SHORT).show()
                                             } else {
                                                 android.widget.Toast.makeText(context, "Page is invalid", android.widget.Toast.LENGTH_SHORT).show()
+=======
+                                            if (currentUrl != null && !currentUrl.contains("translate.goog") && !currentUrl.contains("translate.google")) {
+                                                val translatedUrl = getProxyTranslatedUrl(currentUrl)
+                                                webView.loadUrl(translatedUrl)
+                                            } else {
+                                                android.widget.Toast.makeText(context, "Page is already translated or invalid", android.widget.Toast.LENGTH_SHORT).show()
+>>>>>>> 127957c0895eac519ea1f54e93e97d19a2b1b55f
                                             }
                                         }
                                         showMenu = false
@@ -2886,7 +3197,10 @@ fun BrowserAppScreen(onThemeChanged: (String) -> Unit = {}) {
                         autoFocusParagraphs = sharedPrefs.getBoolean("auto_focus_paragraphs", true)
                         autoTranslateEnabled = sharedPrefs.getBoolean("auto_translate_enabled", true)
                         autoTranslateDomains = sharedPrefs.getString("auto_translate_domains", defaultTranslateDomains) ?: defaultTranslateDomains
+<<<<<<< HEAD
                         translationEngineKey = sharedPrefs.getString("translation_engine", com.example.TranslationEngine.GOOGLE_TRANSLATE.key) ?: com.example.TranslationEngine.GOOGLE_TRANSLATE.key
+=======
+>>>>>>> 127957c0895eac519ea1f54e93e97d19a2b1b55f
                         geminiTranslateEnabled = sharedPrefs.getBoolean("gemini_translate_enabled", false)
                         geminiApiKey = com.example.SecurePreferences.getGeminiApiKey(context)
                         adBlockerEnabled = sharedPrefs.getBoolean("ad_blocker_enabled", true)
@@ -2896,12 +3210,16 @@ fun BrowserAppScreen(onThemeChanged: (String) -> Unit = {}) {
                     },
                     viewModel = viewModel,
                     onThemeChanged = { onThemeChanged(it) },
+<<<<<<< HEAD
                     webViewsMap = webViewsMap,
                     translationEngineKey = translationEngineKey,
                     onTranslationEngineChanged = { key ->
                         translationEngineKey = key
                         sharedPrefs.edit().putString("translation_engine", key).apply()
                     }
+=======
+                    webViewsMap = webViewsMap
+>>>>>>> 127957c0895eac519ea1f54e93e97d19a2b1b55f
                 )
             }
 

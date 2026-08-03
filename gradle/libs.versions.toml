@@ -10,7 +10,11 @@ lifecycleRuntimeCompose = "2.8.7"
 activityCompose = "1.10.1"
 kotlin = "2.2.10"
 composeBom = "2024.09.00"
+<<<<<<< HEAD
 googleDevtoolsKsp = "2.2.10-1.0.31"
+=======
+googleDevtoolsKsp = "2.3.5"
+>>>>>>> 127957c0895eac519ea1f54e93e97d19a2b1b55f
 navigationCompose = "2.8.9"
 roomRuntime = "2.7.0"
 roomKtx = "2.7.0"
